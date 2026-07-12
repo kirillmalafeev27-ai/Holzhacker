@@ -1,6 +1,6 @@
 export const CONFIG = Object.freeze({
   WORLD: {
-    RADIUS: 46,
+    BOUNDS: 50.5,
     STREAM_BLOCK_HALF_WIDTH: 3.1,
     BRIDGE_Z: 7,
     FOG_NEAR: 24,
@@ -24,6 +24,8 @@ export const CONFIG = Object.freeze({
     SWING_DURATION: .72,
     IMPACT_TIME: .39,
     FALL_DURATION: 1.45,
+    TRUNK_LINGER_SECONDS: 3,
+    LOG_DISTANCE: 2.1,
   },
   BUILD: {
     TOTAL_LOGS: 3,
@@ -59,6 +61,11 @@ export const CONFIG = Object.freeze({
     BASE_DAMAGE: 70,
     GRAVITY: 9.81,
     PROJECTILE_RADIUS: .28,
+    CLEAR_RADIUS: 4.2,
+    HIT_RADIUS: 2.1,
+  },
+  TOWER: {
+    THROW_SPEED: 21,
   },
   NOTES: {
     TOTAL: 6,

@@ -31,6 +31,7 @@ export class FortSystem {
     this.gateRight = null;
     this.damageMeshes = [];
     this.collectStageThreeParts();
+    this.shrinkTowerRailing();
     this.onStageChanged = () => {};
     this.onHealthChanged = () => {};
     this.onGateChanged = () => {};
@@ -43,6 +44,20 @@ export class FortSystem {
       if (clean === "GateLeftPivot") this.gateLeft = object;
       if (clean === "GateRightPivot") this.gateRight = object;
       if (/PalisadePost|GateReinforcedPost/.test(clean) && object.isMesh) this.damageMeshes.push(object);
+    });
+  }
+
+  shrinkTowerRailing() {
+    // The authored parapet reaches eye height on the platform; cut it down so
+    // the player can aim and throw stones over it.
+    this.groups[3]?.traverse((object) => {
+      const clean = object.name.replace(/\.\d+$/, "");
+      if (/^TowerRailPost_/.test(clean)) {
+        object.scale.y *= .45;
+        object.position.y -= .33;
+      } else if (/^TowerRail_/.test(clean)) {
+        object.position.y -= .54;
+      }
     });
   }
 
@@ -140,22 +155,28 @@ export class FortSystem {
     if (this.stage <= 0) return;
     const newRadius = Math.hypot(next.x, next.z);
     const oldRadius = Math.hypot(previous.x, previous.z);
-    const crosses = (oldRadius < CONFIG.BUILD.WALL_INNER_RADIUS && newRadius >= CONFIG.BUILD.WALL_INNER_RADIUS)
-      || (oldRadius > CONFIG.BUILD.WALL_OUTER_RADIUS && newRadius <= CONFIG.BUILD.WALL_OUTER_RADIUS);
-    if (!crosses) return;
-    if (this.stage < 3) {
-      // The fort assets were authored in Blender XY. glTF maps Blender +Y to
-      // Three.js -Z, so convert the player angle back before comparing it to
-      // the exact authored construction arc.
-      const blenderAngle = Math.atan2(-next.z, next.x);
-      const start = -Math.PI / 2 + .25;
-      const span = Math.PI * 2 - .50;
-      const delta = (blenderAngle - start + Math.PI * 2) % (Math.PI * 2);
-      const fraction = this.stage === 1 ? .34 : .68;
-      if (delta > span * fraction) return;
-    }
+    // Block any position inside the wall band, not just radial crossings —
+    // otherwise the band can be entered through the unbuilt gap and exited
+    // straight through the logs.
+    const insideBand = newRadius >= CONFIG.BUILD.WALL_INNER_RADIUS && newRadius <= CONFIG.BUILD.WALL_OUTER_RADIUS;
+    const jumpedBand = (oldRadius < CONFIG.BUILD.WALL_INNER_RADIUS && newRadius > CONFIG.BUILD.WALL_OUTER_RADIUS)
+      || (oldRadius > CONFIG.BUILD.WALL_OUTER_RADIUS && newRadius < CONFIG.BUILD.WALL_INNER_RADIUS);
+    if (!insideBand && !jumpedBand) return;
+    if (this.stage < 3 && !this.withinBuiltArc(next)) return;
     const throughGate = this.stage >= 2 && Math.abs(next.x) < 2.05 && next.z > 8.4 && (this.stage < 3 || this.gateOpen);
     if (!throughGate) next.copy(previous);
+  }
+
+  withinBuiltArc(position) {
+    // The fort assets were authored in Blender XY. glTF maps Blender +Y to
+    // Three.js -Z, so convert the player angle back before comparing it to
+    // the exact authored construction arc.
+    const blenderAngle = Math.atan2(-position.z, position.x);
+    const start = -Math.PI / 2 + .25;
+    const span = Math.PI * 2 - .50;
+    const delta = (blenderAngle - start + Math.PI * 2) % (Math.PI * 2);
+    const fraction = this.stage === 1 ? .34 : .68;
+    return delta <= span * fraction;
   }
 
   nearGate(position) {

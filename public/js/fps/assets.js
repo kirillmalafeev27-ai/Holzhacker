@@ -41,6 +41,13 @@ export class AssetStore {
             material.opacity = .78;
             material.depthWrite = false;
           }
+          if (material.name === "Fresh wood texture") {
+            // The Blender procedural grain does not survive glTF export, so the
+            // cut surface arrives untinted (white). Tint it like fresh-cut wood.
+            material.color.setHex(0xcf9448);
+            material.roughness = .72;
+            material.metalness = 0;
+          }
         }
       }
     });

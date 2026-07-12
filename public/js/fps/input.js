@@ -19,6 +19,10 @@ export class InputController {
       this.keys.add(event.code);
     });
     window.addEventListener("keyup", (event) => this.keys.delete(event.code));
+    window.addEventListener("mousedown", (event) => {
+      if (!this.pointerLocked) return;
+      this.pressed.add(`Mouse${event.button}`);
+    });
     window.addEventListener("mousemove", (event) => {
       if (!this.pointerLocked) return;
       this.lookDelta.x += event.movementX;

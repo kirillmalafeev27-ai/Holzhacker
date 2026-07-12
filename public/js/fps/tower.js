@@ -1,15 +1,17 @@
 import * as THREE from "three";
+import { CONFIG } from "./config.js";
 import { QuestionDeck } from "../questions.js";
 
 
 export class TowerSystem {
-  constructor(player, input, ui, fort, catapults, projectiles, audio) {
+  constructor(player, input, ui, fort, catapults, projectiles, effects, audio) {
     this.player = player;
     this.input = input;
     this.ui = ui;
     this.fort = fort;
     this.catapults = catapults;
     this.projectiles = projectiles;
+    this.effects = effects;
     this.audio = audio;
     this.deck = new QuestionDeck();
     this.atTower = false;
@@ -71,6 +73,50 @@ export class TowerSystem {
     }
   }
 
+  // Crosshair throw: the stone flies exactly where the player aims, under
+  // gravity — the arc has to be judged by eye.
+  throwStone() {
+    if (!this.atTower || !this.stoneReady || this.transition || this.question) return false;
+    this.stoneReady = false;
+    this.ui.setTowerTargets(false);
+    this.player.setStoneMode(false);
+    const direction = this.player.camera.getWorldDirection(new THREE.Vector3());
+    const start = this.player.position.clone().addScaledVector(direction, .65);
+    start.y -= .12;
+    this.projectiles.launchBallistic({
+      kind: "player-stone",
+      start,
+      velocity: direction.multiplyScalar(CONFIG.TOWER.THROW_SPEED),
+      scale: 1.05,
+      onMove: (position) => this.checkStoneCollision(position),
+    });
+    this.audio.noise(.16, .12, 600);
+    return true;
+  }
+
+  checkStoneCollision(position) {
+    for (let index = 0; index < this.catapults.catapults.length; index += 1) {
+      const catapult = this.catapults.catapults[index];
+      if (catapult.destroyedState) continue;
+      const distance = Math.hypot(position.x - catapult.position.x, position.z - catapult.position.z);
+      if (distance < CONFIG.CATAPULTS.HIT_RADIUS && position.y < catapult.position.y + 3.4) {
+        this.audio.play("impact");
+        this.catapults.hit(index);
+        this.ui.toast(`Прямое попадание — катапульта ${index + 1}`);
+        return true;
+      }
+    }
+    const ground = this.player.groundHeight(position.x, position.z) ?? 0;
+    if (position.y <= ground + .16) {
+      this.effects.groundImpact(position.clone());
+      this.audio.play("impact");
+      this.ui.toast("Промах — решите новое задание для следующего камня");
+      return true;
+    }
+    return false;
+  }
+
+  // Auto-aimed throw kept for the scripted dev demo.
   throwAt(index) {
     if (!this.atTower || !this.stoneReady || this.transition) return false;
     const target = this.catapults.catapults[index];
@@ -104,14 +150,10 @@ export class TowerSystem {
       this.player.camera.position.copy(this.player.position);
       if (t >= 1) {
         this.transition = null;
-        this.ui.toast("E — немецкое задание · X — спуститься");
+        this.ui.toast("E — немецкое задание · ЛКМ — бросок · X — спуститься");
       }
     }
     if (this.input.consume("KeyX")) this.leave();
-    if (this.stoneReady) {
-      if (this.input.consume("Digit1")) this.throwAt(0);
-      if (this.input.consume("Digit2")) this.throwAt(1);
-      if (this.input.consume("Digit3")) this.throwAt(2);
-    }
+    if (this.stoneReady && this.input.consume("Mouse0")) this.throwStone();
   }
 }

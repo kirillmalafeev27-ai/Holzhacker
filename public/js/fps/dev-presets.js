@@ -121,7 +121,7 @@ export function applyDevPreset(game, preset) {
     case "falling": {
       const tree = showTreeStage(game, 4);
       if (!tree) break;
-      tree.models[4].rotation.z = -1.02;
+      tree.models[4].rotation.z = 1.02;
       const target = tree.root.position.clone().add(new THREE.Vector3(0, 1.2, 0));
       place(game, target.x + 4.2, target.z + 3.4, target);
       break;
@@ -263,6 +263,8 @@ export class DevDemoDirector {
       [6.7, () => game.chopping.applyHit(game.chopping.trees[0])],
       [8.05, () => game.chopping.applyHit(game.chopping.trees[0])],
       [10.1, () => {
+        // Skip the trunk linger delay so the scripted demo keeps its pacing.
+        game.chopping.update(CONFIG.CHOP.TRUNK_LINGER_SECONDS + .05);
         const log = game.chopping.trees[0]?.log;
         if (log) game.chopping.pickup(log);
         game.ui.setCarrying(true);

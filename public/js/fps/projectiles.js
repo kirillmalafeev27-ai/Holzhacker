@@ -21,7 +21,7 @@ export class ProjectileSystem {
       marker.rotation.x = -Math.PI / 2;
       marker.visible = false;
       scene.add(marker);
-      this.pool.push({ object, marker, velocity: new THREE.Vector3(), target: new THREE.Vector3(), age: 0, duration: 0, kind: "", onImpact: null });
+      this.pool.push({ object, marker, velocity: new THREE.Vector3(), target: new THREE.Vector3(), age: 0, duration: 0, kind: "", mode: "target", onMove: null, onImpact: null });
     }
   }
 
@@ -30,6 +30,8 @@ export class ProjectileSystem {
     if (!projectile) return null;
     const duration = flightTime || THREE.MathUtils.clamp(start.distanceTo(target) / 11.5, 1.35, 3.35);
     projectile.kind = kind;
+    projectile.mode = "target";
+    projectile.onMove = null;
     projectile.object.visible = true;
     projectile.object.position.copy(start);
     projectile.object.scale.setScalar(scale);
@@ -45,6 +47,26 @@ export class ProjectileSystem {
     return projectile;
   }
 
+  // Free-flight stone: follows the launch velocity under gravity until onMove
+  // reports a hit (or maxAge runs out). Used for the crosshair-aimed throws.
+  launchBallistic({ kind, start, velocity, scale=1, maxAge=10, onMove, onImpact }) {
+    const projectile = this.pool.find((item) => !item.object.visible);
+    if (!projectile) return null;
+    projectile.kind = kind;
+    projectile.mode = "ballistic";
+    projectile.object.visible = true;
+    projectile.object.position.copy(start);
+    projectile.object.scale.setScalar(scale);
+    projectile.age = 0;
+    projectile.duration = maxAge;
+    projectile.onMove = onMove || null;
+    projectile.onImpact = onImpact;
+    projectile.velocity.copy(velocity);
+    projectile.marker.visible = false;
+    this.active.push(projectile);
+    return projectile;
+  }
+
   update(dt) {
     for (let index = this.active.length - 1; index >= 0; index -= 1) {
       const projectile = this.active[index];
@@ -55,8 +77,11 @@ export class ProjectileSystem {
       projectile.object.rotation.z += dt * 4.2;
       const pulse = .92 + Math.sin(projectile.age * 10) * .12;
       projectile.marker.scale.setScalar(pulse);
-      if (projectile.age < projectile.duration) continue;
-      const impact = projectile.target.clone();
+      const landed = projectile.mode === "ballistic"
+        ? Boolean(projectile.onMove?.(projectile.object.position)) || projectile.age >= projectile.duration
+        : projectile.age >= projectile.duration;
+      if (!landed) continue;
+      const impact = projectile.mode === "ballistic" ? projectile.object.position.clone() : projectile.target.clone();
       projectile.object.position.copy(impact);
       projectile.onImpact?.(impact, projectile.kind);
       projectile.object.visible = false;

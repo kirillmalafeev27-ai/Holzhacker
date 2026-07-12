@@ -93,6 +93,8 @@ class WaldwachtGame {
   setupSystems() {
     this.world = this.assets.clone("world");
     this.world.name = "FirstPersonWorld";
+    const catapultPads = CatapultSystem.plannedPositions(this.assets);
+    this.clearCatapultPads(this.world, catapultPads);
     this.assets.optimizeWorldClone(this.world);
     this.scene.add(this.world);
     this.world.updateMatrixWorld(true);
@@ -116,7 +118,8 @@ class WaldwachtGame {
     this.player = new FirstPersonController(this.camera, this.input, this.assets);
     const spawn = this.assets.markerPosition("PlayerSpawn") || new THREE.Vector3(0, 1.72, 15);
     this.player.spawn(spawn);
-    const colliders = this.assets.worldCollisionData();
+    const colliders = this.assets.worldCollisionData().filter((collider) =>
+      collider.kind !== "forestTree" || !this.nearCatapultPad(collider.position, catapultPads));
     this.fort = new FortSystem(this.scene, this.assets, this.navigation, this.effects);
     this.player.setEnvironment(terrainMeshes, colliders, (next, previous) => this.fort.resolvePlayerCollision(next, previous));
     this.chopping = new ChoppingSystem(this.scene, this.assets, this.player, this.effects, this.audio);
@@ -125,14 +128,34 @@ class WaldwachtGame {
     this.projectiles = new ProjectileSystem(this.scene, this.assets, this.effects, this.audio);
     this.notes = new NoteSystem(this.scene, this.assets, this.navigation, this.audio);
     this.goblins = new GoblinSystem(this.scene, this.assets, this.navigation, this.fort, this.effects, this.audio);
-    this.catapults = new CatapultSystem(this.scene, this.assets, this.projectiles, this.fort, this.player, this.notes, this.effects, this.audio);
-    this.tower = new TowerSystem(this.player, this.input, this.ui, this.fort, this.catapults, this.projectiles, this.audio);
+    this.catapults = new CatapultSystem(
+      this.scene, this.assets, this.projectiles, this.fort, this.player, this.notes, this.effects, this.audio,
+      (x, z) => this.player.groundHeight(x, z),
+    );
+    this.tower = new TowerSystem(this.player, this.input, this.ui, this.fort, this.catapults, this.projectiles, this.effects, this.audio);
     this.setupCallbacks();
     if (this.runtime.navDebug) {
       this.navigation.toggleDebug(true);
       this.ui.setDebug(true);
     }
     this.exposeDebugAPI();
+  }
+
+  nearCatapultPad(position, pads) {
+    return pads.some((pad) => Math.hypot(position.x - pad.x, position.z - pad.z) < CONFIG.CATAPULTS.CLEAR_RADIUS);
+  }
+
+  clearCatapultPads(world, pads) {
+    // Open a small clearing around each catapult stand so the machines are
+    // visible from the tower; only trees are removed.
+    world.updateMatrixWorld(true);
+    const removable = [];
+    world.traverse((object) => {
+      if (!/^ForestTree_/.test(object.name)) return;
+      const position = object.getWorldPosition(new THREE.Vector3());
+      if (this.nearCatapultPad(position, pads)) removable.push(object);
+    });
+    for (const object of removable) object.parent?.remove(object);
   }
 
   setupCallbacks() {
@@ -261,7 +284,7 @@ class WaldwachtGame {
   findInteraction() {
     this.currentInteraction = null;
     if (this.tower.atTower) {
-      if (!this.tower.transition) this.currentInteraction = { label: this.tower.stoneReady ? "Выберите катапульту клавишами 1, 2 или 3" : "Открыть немецкое задание", action: () => this.tower.openQuestion() };
+      if (!this.tower.transition) this.currentInteraction = { label: this.tower.stoneReady ? "Прицельтесь перекрестием и бросьте камень — ЛКМ" : "Открыть немецкое задание", action: () => this.tower.openQuestion() };
       this.ui.setPrompt(this.currentInteraction?.label || "");
       return;
     }

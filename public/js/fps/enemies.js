@@ -151,7 +151,23 @@ export class GoblinSystem {
 
 
 export class CatapultSystem {
-  constructor(scene, assets, projectiles, fort, player, notes, effects, audio) {
+  // How far each catapult is pulled toward the fort from its authored marker.
+  // Spawn A sits just west of the stream, so it is pulled less to stay out of
+  // the water trench.
+  static PULL = { CatapultSpawn_A: .9, CatapultSpawn_B: .8, CatapultSpawn_C: .8 };
+
+  static plannedPositions(assets) {
+    const markers = ["CatapultSpawn_A", "CatapultSpawn_B", "CatapultSpawn_C"];
+    return markers.slice(0, CONFIG.CATAPULTS.COUNT).map((name, index) => {
+      const position = assets.markerPosition(name) || new THREE.Vector3(25, 0, index * 5);
+      const pull = CatapultSystem.PULL[name] ?? .85;
+      position.x *= pull;
+      position.z *= pull;
+      return position;
+    });
+  }
+
+  constructor(scene, assets, projectiles, fort, player, notes, effects, audio, groundHeight = null) {
     this.scene = scene;
     this.assets = assets;
     this.projectiles = projectiles;
@@ -160,6 +176,7 @@ export class CatapultSystem {
     this.notes = notes;
     this.effects = effects;
     this.audio = audio;
+    this.groundHeight = groundHeight;
     this.catapults = [];
     this.active = false;
     this.onDestroyed = () => {};
@@ -167,9 +184,11 @@ export class CatapultSystem {
   }
 
   spawnModels() {
-    const markers = ["CatapultSpawn_A", "CatapultSpawn_B", "CatapultSpawn_C"];
-    for (let index = 0; index < CONFIG.CATAPULTS.COUNT; index += 1) {
-      const position = this.assets.markerPosition(markers[index]) || new THREE.Vector3(25, 0, index * 5);
+    const positions = CatapultSystem.plannedPositions(this.assets);
+    for (let index = 0; index < positions.length; index += 1) {
+      const position = positions[index];
+      const ground = this.groundHeight?.(position.x, position.z);
+      if (ground !== null && ground !== undefined) position.y = ground;
       const intact = this.assets.clone("catapult");
       const destroyed = this.assets.clone("catapultDestroyed");
       intact.position.copy(position);

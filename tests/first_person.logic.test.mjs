@@ -37,6 +37,7 @@ const chopAssets = {
 };
 const chopPlayer = {
   carrying: false,
+  position: new THREE.Vector3(2, CONFIG.PLAYER.EYE_HEIGHT, -3),
   rig: { startSwing(onImpact) { onImpact(); return true; } },
   setCarrying(value) { this.carrying = value; },
 };
@@ -47,10 +48,20 @@ for (let hit = 0; hit < 4; hit += 1) assert.equal(chopping.chop(tree), true);
 assert.equal(tree.hits, 4);
 assert.equal(tree.state, "falling");
 assert.equal(tree.models[4].visible, true);
+// The notch turns toward the player, so the trunk must fall the other way.
+const toPlayer = chopPlayer.position.clone().sub(tree.root.position).setY(0).normalize();
 chopping.update(CONFIG.CHOP.FALL_DURATION + .1);
 assert.equal(tree.state, "fallen");
 assert.equal(tree.models[5].visible, true);
+const fallDirection = chopping.fallDirection(tree);
+assert.ok(fallDirection.dot(toPlayer) < -.99);
+// The trunk lingers before it is replaced with one big log.
+assert.equal(chopping.logs.length, 0);
+chopping.update(CONFIG.CHOP.TRUNK_LINGER_SECONDS + .1);
+assert.equal(tree.state, "cleared");
 assert.equal(chopping.logs.length, 1);
+const logOffset = chopping.logs[0].object.position.clone().sub(tree.root.position).setY(0);
+assert.ok(logOffset.normalize().dot(fallDirection) > .99);
 assert.equal(chopping.pickup(chopping.logs[0]), true);
 assert.equal(chopPlayer.carrying, true);
 pass("B chopping and fall");
@@ -108,6 +119,32 @@ assert.equal(fort.health, 750);
 pass("D fort and gate navigation");
 
 
+// D2 — stage-1 palisade logs are solid: no radial pass and no sneaking out
+// through the built arc after entering the band via the unbuilt gap.
+const stageOneFort = new FortSystem(new THREE.Group(), { clone: fortAsset }, fortNavigation, silentEffects);
+stageOneFort.buildNext();
+assert.equal(stageOneFort.stage, 1);
+const wallRadius = (CONFIG.BUILD.WALL_INNER_RADIUS + CONFIG.BUILD.WALL_OUTER_RADIUS) / 2;
+// Blender angle .35 rad lies inside the stage-1 arc; three.js z = -sin(angle).
+const builtAngle = .35;
+const radialPrevious = new THREE.Vector3(Math.cos(builtAngle) * 9.0, 0, -Math.sin(builtAngle) * 9.0);
+const radialNext = new THREE.Vector3(Math.cos(builtAngle) * 9.4, 0, -Math.sin(builtAngle) * 9.4);
+stageOneFort.resolvePlayerCollision(radialNext, radialPrevious);
+assert.ok(radialNext.distanceTo(radialPrevious) < 1e-9);
+// Tangential move inside the band into the built arc must also be blocked.
+const gapAngle = 3.0; // outside the stage-1 arc
+const tangentialPrevious = new THREE.Vector3(Math.cos(gapAngle) * wallRadius, 0, -Math.sin(gapAngle) * wallRadius);
+const tangentialNext = new THREE.Vector3(Math.cos(builtAngle) * wallRadius, 0, -Math.sin(builtAngle) * wallRadius);
+stageOneFort.resolvePlayerCollision(tangentialNext, tangentialPrevious);
+assert.ok(tangentialNext.distanceTo(tangentialPrevious) < 1e-9);
+// The unbuilt gap stays passable at stage 1.
+const gapPrevious = new THREE.Vector3(Math.cos(gapAngle) * 9.0, 0, -Math.sin(gapAngle) * 9.0);
+const gapNext = new THREE.Vector3(Math.cos(gapAngle) * 9.4, 0, -Math.sin(gapAngle) * 9.4);
+stageOneFort.resolvePlayerCollision(gapNext, gapPrevious);
+assert.ok(gapNext.distanceTo(gapPrevious) > .3);
+pass("D2 stage-1 wall is solid");
+
+
 // E — the installed three-pathfinding package builds and queries a real zone.
 const plane = new THREE.PlaneGeometry(32, 32, 16, 16).rotateX(-Math.PI / 2);
 const navigation = new NavigationSystem(
@@ -153,6 +190,6 @@ assert.equal(projectiles.active.length, 0);
 pass("F ballistic projectile");
 
 
-console.log(`FIRST_PERSON_LOGIC_OK ${passed.length}/6`);
+console.log(`FIRST_PERSON_LOGIC_OK ${passed.length}/7`);
 console.log(passed.join(" | "));
 

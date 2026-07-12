@@ -14,16 +14,20 @@ export class FirstPersonRig {
     this.axe = assets.clone("axe");
     this.log = assets.clone("log");
     this.stone = assets.clone("stone");
-    this.root.add(this.arms, this.axe, this.log, this.stone);
+    this.root.add(this.arms, this.log, this.stone);
     this.arms.position.set(0, -.46, -.78);
     this.arms.scale.setScalar(.92);
-    this.axe.position.set(.46, -.60, -1.02);
+    this.buildHands();
+    // The axe rides inside the arms group, anchored to the right fist, so the
+    // handle stays in the palm during the swing and arm recoil.
+    this.arms.add(this.axe);
+    this.axe.position.copy(this.rightHandAnchor).add(new THREE.Vector3(.015, -.13, -.03));
     this.axe.rotation.set(.10, -.28, -.38);
-    this.axe.scale.setScalar(.34);
+    this.axe.scale.setScalar(.34 / .92);
     this.log.position.set(0, -.54, -1.18);
     this.log.rotation.set(0, 0, Math.PI / 2);
     this.log.scale.setScalar(.9);
-    this.stone.position.set(.32, -.36, -.74);
+    this.stone.position.copy(this.rightHandAnchor).multiplyScalar(.92).add(this.arms.position).add(new THREE.Vector3(0, .17, 0));
     this.stone.scale.setScalar(1.1);
     this.log.visible = false;
     this.stone.visible = false;
@@ -49,6 +53,57 @@ export class FirstPersonRig {
         object.castShadow = false;
       }
     });
+  }
+
+  buildHands() {
+    const rightHandMesh = this.arms.getObjectByName("Arm_1_Hand");
+    const leftHandMesh = this.arms.getObjectByName("Arm_-1_Hand");
+    const skin = (rightHandMesh?.material && !Array.isArray(rightHandMesh.material))
+      ? rightHandMesh.material
+      : new THREE.MeshStandardMaterial({ color: 0x80592f, roughness: .85 });
+    this.rightHandAnchor = rightHandMesh ? rightHandMesh.position.clone() : new THREE.Vector3(.24, -.30, -1.31);
+    const leftAnchor = leftHandMesh ? leftHandMesh.position.clone() : new THREE.Vector3(-.24, -.30, -1.31);
+    if (rightHandMesh) rightHandMesh.visible = false;
+    if (leftHandMesh) leftHandMesh.visible = false;
+    const right = this.makeHand(skin, 1, 1);
+    right.position.copy(this.rightHandAnchor).add(new THREE.Vector3(0, .015, -.05));
+    right.rotation.set(.10, -.28, -.38);
+    const left = this.makeHand(skin, -1, .62);
+    left.position.copy(leftAnchor).add(new THREE.Vector3(0, .015, -.05));
+    left.rotation.set(.24, .30, .28);
+    this.arms.add(right, left);
+  }
+
+  makeHand(material, side, curl) {
+    // Chunky low-poly mitt sized to match the .28 m thick bracers.
+    const hand = new THREE.Group();
+    hand.name = side > 0 ? "HandRight" : "HandLeft";
+    const palm = new THREE.Mesh(new THREE.BoxGeometry(.105, .235, .185), material);
+    palm.position.set(side * -.085, -.008, .008);
+    palm.rotation.y = side * .12;
+    const knuckles = new THREE.Mesh(new THREE.BoxGeometry(.095, .205, .16), material);
+    knuckles.position.set(side * -.024, .02, .02);
+    hand.add(palm, knuckles);
+    const rows = [.094, .033, -.028, -.089];
+    for (let index = 0; index < rows.length; index += 1) {
+      const reach = .092 - Math.abs(index - 1) * .008;
+      this.addFingerArc(hand, material, side, rows[index], reach, 1.78, curl * (2.9 - index * .12));
+    }
+    // Thumb wraps the opposite way, lower on the grip.
+    this.addFingerArc(hand, material, side, -.102, .094, -1.85, -curl * 1.55, .052);
+    return hand;
+  }
+
+  addFingerArc(hand, material, side, y, radius, startAngle, wrap, thickness = .044) {
+    const segments = 4;
+    const segmentLength = Math.abs(wrap) * radius / segments + .016;
+    for (let index = 0; index < segments; index += 1) {
+      const angle = startAngle - wrap * (index + .5) / segments;
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(segmentLength, thickness, thickness), material);
+      mesh.position.set(side * Math.cos(angle) * radius, y + index * .006, Math.sin(angle) * radius);
+      mesh.rotation.y = side > 0 ? Math.atan2(-Math.cos(angle), -Math.sin(angle)) : Math.atan2(-Math.cos(angle), Math.sin(angle));
+      hand.add(mesh);
+    }
   }
 
   setMode(mode) {
@@ -209,11 +264,10 @@ export class FirstPersonController {
   }
 
   resolveWorldBounds(next) {
-    const radius = Math.hypot(next.x, next.z);
-    if (radius > CONFIG.WORLD.RADIUS) {
-      next.x *= CONFIG.WORLD.RADIUS / radius;
-      next.z *= CONFIG.WORLD.RADIUS / radius;
-    }
+    // The terrain is a ±52 m square; keep the player on it with a small margin
+    // so the whole location is walkable, corners included.
+    next.x = THREE.MathUtils.clamp(next.x, -CONFIG.WORLD.BOUNDS, CONFIG.WORLD.BOUNDS);
+    next.z = THREE.MathUtils.clamp(next.z, -CONFIG.WORLD.BOUNDS, CONFIG.WORLD.BOUNDS);
   }
 
   resolveStream(next) {
