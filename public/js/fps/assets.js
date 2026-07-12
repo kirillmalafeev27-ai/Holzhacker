@@ -164,10 +164,12 @@ export class AssetStore {
       const radius = Number(object.userData?.collisionRadius || 0);
       if (!radius) return;
       const position = object.getWorldPosition(new THREE.Vector3());
-      const scale = object.getWorldScale(new THREE.Vector3());
+      // collisionRadius is authored in world units. Multiplying it by the
+      // node scale turned every 6-9x scaled pine into a 5-8 m collider and
+      // fused the forest belt into an impassable wall around the clearing.
       colliders.push({
         position,
-        radius: radius * Math.max(scale.x, scale.z),
+        radius,
         kind: object.userData?.kind || "obstacle",
       });
     });
