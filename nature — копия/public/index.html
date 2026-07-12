@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#111d18">
+  <title>Waldwacht — Forest Defense</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "/vendor/three/build/three.module.js",
+        "three/addons/": "/vendor/three/examples/jsm/",
+        "three-pathfinding": "/vendor/three-pathfinding/dist/three-pathfinding.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <main id="game-root">
+    <canvas id="game" aria-label="Трёхмерная игра Waldwacht"></canvas>
+
+    <section id="loading" class="screen-layer loading-screen">
+      <div class="loading-emblem" aria-hidden="true"><span>W</span></div>
+      <p class="eyebrow">ЛЕСНАЯ КРЕПОСТЬ</p>
+      <h1>WALDWACHT</h1>
+      <p id="loading-status">Подготавливаем лес…</p>
+      <div class="loading-track"><span id="loading-bar"></span></div>
+      <p id="loading-detail" class="loading-detail">Террейн · природа · навигация</p>
+    </section>
+
+    <section id="start-screen" class="screen-layer start-screen hidden">
+      <div class="start-card">
+        <p class="eyebrow">SURVIVAL DEFENSE · FIRST PERSON</p>
+        <h1>Защитите Waldwacht</h1>
+        <p>Рубите деревья, постройте частокол и отбейте нападение до падения крепости.</p>
+        <button id="start-button" type="button">ВОЙТИ В ЛЕС</button>
+        <div class="control-grid">
+          <span><kbd>WASD</kbd> движение</span>
+          <span><kbd>мышь</kbd> обзор</span>
+          <span><kbd>E</kbd> действие</span>
+          <span><kbd>Shift</kbd> бег</span>
+          <span><kbd>Space</kbd> уклонение</span>
+          <span><kbd>F3</kbd> navmesh debug</span>
+        </div>
+      </div>
+    </section>
+
+    <div id="hud" class="hidden" aria-live="polite">
+      <div class="hud-top-left glass-panel">
+        <div class="brand-row">
+          <span class="mini-emblem">W</span>
+          <div><b>WALDWACHT</b><small>ЗАЩИТНИК ЛЕСА</small></div>
+        </div>
+        <div class="stat-label"><span>Здоровье</span><span id="health-text">3 / 3</span></div>
+        <div class="meter health-meter"><span id="health-bar"></span></div>
+        <div class="stat-label"><span>Крепость</span><span id="base-health-text">1000 / 1000</span></div>
+        <div class="meter base-meter"><span id="base-health-bar"></span></div>
+      </div>
+
+      <div class="hud-top-center glass-panel">
+        <span id="phase-label">ПОДГОТОВКА</span>
+        <strong id="attack-timer">03:00</strong>
+        <small id="attack-subtitle">ДО НАПАДЕНИЯ</small>
+      </div>
+
+      <div class="hud-top-right glass-panel">
+        <p class="eyebrow">ТЕКУЩАЯ ЦЕЛЬ</p>
+        <h2 id="objective-title">Заготовьте древесину</h2>
+        <p id="objective-text">Найдите отмеченный дуб и используйте существующую рубку.</p>
+        <div class="counter-row">
+          <span>Брёвна <b id="logs-count">0 / 3</b></span>
+          <span>База <b id="build-stage">0 / 3</b></span>
+          <span>Записки <b id="notes-count">0 / 6</b></span>
+        </div>
+      </div>
+
+      <div id="crosshair" class="crosshair" aria-hidden="true"><i></i><i></i><i></i><i></i><b></b></div>
+      <div id="interaction-prompt" class="interaction-prompt hidden"><kbd>E</kbd><span></span></div>
+      <div id="carry-indicator" class="carry-indicator hidden">ТЯЖЁЛОЕ БРЕВНО · СКОРОСТЬ СНИЖЕНА</div>
+      <div id="tower-targets" class="tower-targets hidden">ЦЕЛИ: <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></div>
+      <div id="warning" class="warning hidden"></div>
+      <div id="toast-stack" class="toast-stack"></div>
+      <div id="damage-vignette" class="damage-vignette"></div>
+      <div id="dodge-flash" class="dodge-flash"></div>
+    </div>
+
+    <section id="question-modal" class="modal-layer hidden" role="dialog" aria-modal="true" aria-labelledby="question-prompt">
+      <div class="question-card">
+        <div class="question-icon">?</div>
+        <p class="eyebrow">DEUTSCH · A1–A2</p>
+        <h2 id="question-prompt">Wähle die richtige Antwort</h2>
+        <p>Правильный ответ подготовит один камень для башни.</p>
+        <div id="question-options" class="question-options"></div>
+        <p id="question-feedback" class="question-feedback"></p>
+      </div>
+    </section>
+
+    <aside id="debug-panel" class="debug-panel hidden">
+      <header><b>NAVMESH DEBUG</b><span id="debug-fps">60 FPS</span></header>
+      <dl>
+        <div><dt>Стадия</dt><dd id="debug-stage">0</dd></div>
+        <div><dt>Ворота</dt><dd id="debug-gate">OPEN</dd></div>
+        <div><dt>Агенты</dt><dd id="debug-agents">0</dd></div>
+        <div><dt>Путь</dt><dd id="debug-path">—</dd></div>
+        <div><dt>Состояние</dt><dd id="debug-state">exploration</dd></div>
+      </dl>
+      <p>Зелёный — navmesh · голубой — путь · красный — препятствия · жёлтый — attack points</p>
+    </aside>
+
+    <section id="pause-screen" class="screen-layer pause-screen hidden">
+      <div class="pause-card">
+        <p class="eyebrow">ИГРА ПРИОСТАНОВЛЕНА</p>
+        <h2>Вернитесь в Waldwacht</h2>
+        <p>Нажмите на экран, чтобы снова захватить мышь.</p>
+      </div>
+    </section>
+
+    <section id="end-screen" class="screen-layer end-screen hidden">
+      <div class="end-card">
+        <div id="end-crest" class="end-crest">✓</div>
+        <p id="end-kicker" class="eyebrow">WALDWACHT ВЫСТОЯЛ</p>
+        <h1 id="end-title">Победа</h1>
+        <p id="end-message"></p>
+        <div class="end-stats">
+          <span>Записки <b id="end-notes">0 / 6</b></span>
+          <span>Крепость <b id="end-base">0</b></span>
+        </div>
+        <button id="restart-button" type="button">НАЧАТЬ ЗАНОВО</button>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="/js/fps/main.js"></script>
+</body>
+</html>

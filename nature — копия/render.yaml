@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: waldwacht-forest-defense
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /
+    autoDeployTrigger: commit

@@ -1,0 +1,18 @@
+{
+  "name": "forest-defense",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check public/js/questions.js && node --check public/js/fps/assets.js && node --check public/js/fps/chopping.js && node --check public/js/fps/config.js && node --check public/js/fps/dev-presets.js && node --check public/js/fps/effects.js && node --check public/js/fps/enemies.js && node --check public/js/fps/fort.js && node --check public/js/fps/input.js && node --check public/js/fps/main.js && node --check public/js/fps/navigation.js && node --check public/js/fps/notes.js && node --check public/js/fps/player.js && node --check public/js/fps/projectiles.js && node --check public/js/fps/tower.js && node --check public/js/fps/ui.js",
+    "test": "node tests/first_person.logic.test.mjs"
+  },
+  "dependencies": {
+    "three": "^0.185.1",
+    "three-pathfinding": "^1.3.0"
+  }
+}

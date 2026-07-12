@@ -1,0 +1,12 @@
+node_modules/
+GLTF format/
+validation/
+__pycache__/
+.codex/
+.agents/
+*.blend
+*.blend1
+*.pyc
+npm-debug.log*
+
+Textures/
