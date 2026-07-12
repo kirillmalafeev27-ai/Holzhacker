@@ -23,7 +23,7 @@ export const CONFIG = Object.freeze({
     HITS: 4,
     SWING_DURATION: .72,
     IMPACT_TIME: .39,
-    FALL_DURATION: 1.45,
+    FALL_DURATION: 1.75,
     TRUNK_LINGER_SECONDS: 3,
     LOG_DISTANCE: 2.1,
   },

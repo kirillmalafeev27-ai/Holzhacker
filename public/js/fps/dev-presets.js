@@ -119,9 +119,9 @@ export function applyDevPreset(game, preset) {
     case "chop75": frameTree(game, 3); break;
     case "chop90": frameTree(game, 4); break;
     case "falling": {
-      const tree = showTreeStage(game, 4);
+      const tree = showTreeStage(game, 5);
       if (!tree) break;
-      tree.models[4].rotation.z = 1.02;
+      if (tree.fallPivot) tree.fallPivot.rotation.z = THREE.MathUtils.degToRad(55);
       const target = tree.root.position.clone().add(new THREE.Vector3(0, 1.2, 0));
       place(game, target.x + 4.2, target.z + 3.4, target);
       break;

@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+import { mergeGeometries, mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 import { ASSET_URLS } from "./config.js";
 
 
@@ -30,27 +30,47 @@ export class AssetStore {
     scene.name = `Asset_${key}`;
     scene.traverse((object) => {
       if (!object.isMesh) return;
+      const materials = object.material ? (Array.isArray(object.material) ? object.material : [object.material]) : [];
+      const isWater = /ForestStream/.test(object.name) || materials.some((material) => material.name === "StreamWater");
+      if (isWater) {
+        this.prepareWater(object);
+        return;
+      }
       object.castShadow = key.startsWith("nav") ? false : true;
       object.receiveShadow = true;
-      if (object.material) {
-        const materials = Array.isArray(object.material) ? object.material : [object.material];
-        for (const material of materials) {
-          material.precision = "mediump";
-          if (material.name === "StreamWater") {
-            material.transparent = true;
-            material.opacity = .78;
-            material.depthWrite = false;
-          }
-          if (material.name === "Fresh wood texture") {
-            // The Blender procedural grain does not survive glTF export, so the
-            // cut surface arrives untinted (white). Tint it like fresh-cut wood.
-            material.color.setHex(0xcf9448);
-            material.roughness = .72;
-            material.metalness = 0;
-          }
+      for (const material of materials) {
+        material.precision = "mediump";
+        if (material.name === "Fresh wood texture") {
+          // The Blender procedural grain does not survive glTF export, so the
+          // cut surface arrives untinted (white). Tint it like fresh-cut wood.
+          material.color.setHex(0xcf9448);
+          material.roughness = .72;
+          material.metalness = 0;
         }
       }
     });
+  }
+
+  prepareWater(object) {
+    // The exported flat-shaded ribbon with the mediump blend material reads
+    // as noisy, pixelated banding; smooth the normals, use a clean highp
+    // material and keep tree shadows from speckling the surface.
+    object.geometry = mergeVertices(object.geometry);
+    object.geometry.computeVertexNormals();
+    const water = new THREE.MeshStandardMaterial({
+      color: 0x2e6f83,
+      roughness: .16,
+      metalness: .05,
+      transparent: true,
+      opacity: .8,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    water.name = "StreamWater";
+    object.material = water;
+    object.castShadow = false;
+    object.receiveShadow = false;
+    object.userData.noShadow = true;
   }
 
   collectMarkers(world) {
@@ -69,8 +89,13 @@ export class AssetStore {
     const clone = source.clone(true);
     clone.traverse((object) => {
       if (object.isMesh) {
-        object.castShadow = source.name.includes("nav") ? false : true;
-        object.receiveShadow = true;
+        if (object.userData.noShadow) {
+          object.castShadow = false;
+          object.receiveShadow = false;
+        } else {
+          object.castShadow = source.name.includes("nav") ? false : true;
+          object.receiveShadow = true;
+        }
       }
     });
     return clone;

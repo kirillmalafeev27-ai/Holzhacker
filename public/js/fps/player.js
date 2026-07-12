@@ -22,7 +22,8 @@ export class FirstPersonRig {
     // handle stays in the palm during the swing and arm recoil.
     this.arms.add(this.axe);
     this.axe.position.copy(this.rightHandAnchor).add(new THREE.Vector3(.015, -.13, -.03));
-    this.axe.rotation.set(.10, -.28, -.38);
+    // Blade (head local +X) turned to face the tree, not sideways.
+    this.axe.rotation.set(.10, 1.05, -.38);
     this.axe.scale.setScalar(.34 / .92);
     this.log.position.set(0, -.54, -1.18);
     this.log.rotation.set(0, 0, Math.PI / 2);
@@ -67,7 +68,7 @@ export class FirstPersonRig {
     if (leftHandMesh) leftHandMesh.visible = false;
     const right = this.makeHand(skin, 1, 1);
     right.position.copy(this.rightHandAnchor).add(new THREE.Vector3(0, .015, -.05));
-    right.rotation.set(.10, -.28, -.38);
+    right.rotation.set(.10, 1.05, -.38);
     const left = this.makeHand(skin, -1, .62);
     left.position.copy(leftAnchor).add(new THREE.Vector3(0, .015, -.05));
     left.rotation.set(.24, .30, .28);
@@ -158,7 +159,7 @@ export class FirstPersonRig {
     }
     if (t >= 1) {
       this.swing = null;
-      this.axe.rotation.set(.10, -.28, -.38);
+      this.axe.rotation.set(.10, 1.05, -.38);
       this.arms.rotation.set(0, 0, 0);
     }
   }

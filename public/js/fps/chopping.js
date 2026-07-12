@@ -4,6 +4,39 @@ import { CONFIG } from "./config.js";
 
 const STAGES = ["tree0", "tree25", "tree50", "tree75", "tree90", "treeFallen"];
 
+// The authored fall from tree_chop_simulation.blend (24 fps, frames 102-144):
+// the crown hinges on the rear wood at Blender (-0.23, -0.27, 1.27) and tips
+// away from the notch, hits the ground at 88 deg, bounces to 84 and settles
+// at 87. Times are seconds since the fourth axe impact.
+const FALL_TIMES = [0, .333, .5, .833, 1.25, 1.417, 1.625, 1.75];
+const FALL_ANGLES = [0, 0, 4, 27, 61, 88, 84, 87].map((deg) => deg * Math.PI / 180);
+const FALL_HINGE = new THREE.Vector3(-.23, 1.27, .27);
+const FALL_FINAL_ANGLE = FALL_ANGLES[FALL_ANGLES.length - 1];
+const FALL_SWAP_TIME = FALL_TIMES[1];
+const FALL_IMPACT_TIME = 1.417;
+
+// Piecewise cubic Hermite with Catmull-Rom tangents — matches the Blender
+// bezier interpolation closely enough to keep the authored motion.
+function sampleFallAngle(time) {
+  const last = FALL_TIMES.length - 1;
+  if (time <= FALL_TIMES[0]) return FALL_ANGLES[0];
+  if (time >= FALL_TIMES[last]) return FALL_ANGLES[last];
+  let index = 0;
+  while (time > FALL_TIMES[index + 1]) index += 1;
+  const t0 = FALL_TIMES[index], t1 = FALL_TIMES[index + 1];
+  const p0 = FALL_ANGLES[index], p1 = FALL_ANGLES[index + 1];
+  const dt = t1 - t0;
+  const prevT = index > 0 ? FALL_TIMES[index - 1] : t0 - dt;
+  const prevP = index > 0 ? FALL_ANGLES[index - 1] : p0;
+  const nextT = index + 2 <= last ? FALL_TIMES[index + 2] : t1 + dt;
+  const nextP = index + 2 <= last ? FALL_ANGLES[index + 2] : p1;
+  const m0 = (p1 - prevP) / (t1 - prevT) * dt;
+  const m1 = (nextP - p0) / (nextT - t0) * dt;
+  const s = (time - t0) / dt;
+  const s2 = s * s, s3 = s2 * s;
+  return (2 * s3 - 3 * s2 + 1) * p0 + (s3 - 2 * s2 + s) * m0 + (-2 * s3 + 3 * s2) * p1 + (s3 - s2) * m1;
+}
+
 
 export class ChoppingSystem {
   constructor(scene, assets, player, effects, audio) {
@@ -34,12 +67,33 @@ export class ChoppingSystem {
       models[0].visible = true;
       root.userData.choppable = true;
       this.scene.add(root);
+      const fallenCrown = models[5].getObjectByName("TreeCrownFallen") || null;
       this.trees.push({
         id: index, root, models, hits: 0, state: "standing",
         fallTime: 0, lyingTime: 0, log: null,
-        fallenCrown: models[5].getObjectByName("TreeCrownFallen") || null,
+        fallenCrown,
+        fallPivot: fallenCrown ? this.buildFallHinge(models[5], fallenCrown) : null,
+        crownSwapped: false, impactPlayed: false,
       });
     }
+  }
+
+  // Re-hang the exported (settled) crown on the authored rear-wood hinge so
+  // the original Blender fall animation can be replayed: at angle 0 the crown
+  // stands exactly on the stump, at FALL_FINAL_ANGLE it matches the export.
+  buildFallHinge(fallenModel, crown) {
+    const pivot = new THREE.Group();
+    pivot.name = "FallHinge";
+    pivot.position.copy(FALL_HINGE);
+    const settled = new THREE.Matrix4()
+      .makeTranslation(FALL_HINGE.x, FALL_HINGE.y, FALL_HINGE.z)
+      .multiply(new THREE.Matrix4().makeRotationZ(FALL_FINAL_ANGLE));
+    crown.updateMatrix();
+    crown.applyMatrix4(settled.invert());
+    fallenModel.add(pivot);
+    pivot.add(crown);
+    pivot.rotation.z = FALL_FINAL_ANGLE;
+    return pivot;
   }
 
   collisionData() {
@@ -90,6 +144,8 @@ export class ChoppingSystem {
     if (tree.hits >= CONFIG.CHOP.HITS) {
       tree.state = "falling";
       tree.fallTime = 0;
+      tree.crownSwapped = false;
+      tree.impactPlayed = false;
     }
   }
 
@@ -115,20 +171,27 @@ export class ChoppingSystem {
     for (const tree of this.trees) {
       if (tree.state === "falling") {
         tree.fallTime += dt;
-        const t = Math.min(1, tree.fallTime / CONFIG.CHOP.FALL_DURATION);
-        const eased = 1 - Math.pow(1 - t, 3);
-        // Positive Z spin tips the trunk toward local -X: away from the player.
-        tree.models[4].rotation.z = eased * 1.36;
-        if (t < 1) continue;
-        tree.models[4].rotation.z = 0;
+        // Replay the authored Blender fall: swap the stage-90 trunk for the
+        // hinged stump+crown, then drive the hinge along the keyframed curve
+        // (ground hit at 88 deg, bounce, settle at 87 deg).
+        if (tree.fallPivot) {
+          if (!tree.crownSwapped && tree.fallTime >= FALL_SWAP_TIME) {
+            tree.crownSwapped = true;
+            tree.fallPivot.rotation.z = 0;
+            this.showStage(tree, 5);
+          }
+          if (tree.crownSwapped) tree.fallPivot.rotation.z = sampleFallAngle(tree.fallTime);
+        }
+        if (!tree.impactPlayed && tree.fallTime >= FALL_IMPACT_TIME) {
+          tree.impactPlayed = true;
+          this.effects.groundImpact(tree.root.position.clone().addScaledVector(this.fallDirection(tree), 3.1));
+          this.audio.play("impact");
+        }
+        if (tree.fallTime < CONFIG.CHOP.FALL_DURATION) continue;
+        if (tree.fallPivot) tree.fallPivot.rotation.z = FALL_FINAL_ANGLE;
         this.showStage(tree, 5);
-        // The fallen crown was authored lying toward +X; flip it to match the
-        // actual fall direction.
-        tree.models[5].rotation.y = Math.PI;
         tree.state = "fallen";
         tree.lyingTime = 0;
-        this.effects.groundImpact(tree.root.position.clone().addScaledVector(this.fallDirection(tree), 2.8));
-        this.audio.play("impact");
       } else if (tree.state === "fallen") {
         tree.lyingTime += dt;
         if (tree.lyingTime < CONFIG.CHOP.TRUNK_LINGER_SECONDS) continue;
