@@ -116,6 +116,7 @@ kbd { min-width: 27px; padding: 3px 7px; border: 1px solid #d9c39055; border-rad
 .learning-status { align-self: start; padding: 5px 8px; border-radius: 999px; border: 1px solid rgba(255,255,255,.14); color: #cfe6f3; font-size: 10px; white-space: nowrap; }
 .learning-menu[data-status="online"] .learning-status { color: #8dff9e; border-color: rgba(141,255,158,.3); background: rgba(141,255,158,.09); }
 .learning-menu[data-status="loading"] .learning-status { color: #ffe27a; border-color: rgba(255,226,122,.34); background: rgba(255,226,122,.09); }
+.learning-menu[data-status="error"] .learning-status { color: #ff9c8c; border-color: rgba(255,112,112,.42); background: rgba(92,23,26,.3); }
 .learning-controls { display: grid; grid-template-columns: minmax(260px, 1.25fr) minmax(220px, .75fr); gap: 12px; }
 .control-block, .field { display: grid; gap: 7px; }
 .learning-controls .level-block { grid-column: 1 / -1; }

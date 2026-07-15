@@ -68,16 +68,16 @@ export class ActionQuizGate {
     return panel;
   }
 
-  async prepare(count = 15) {
+  async prepare(count = 10) {
     const prepare = window.prepareSeaQuiz || window.prepareMostyQuiz;
     if (typeof prepare !== "function") return { ok: true, generated: false };
-    return prepare({ floors: count, startFloor: 1 });
+    return prepare({ floors: 10, startFloor: 1, poolMode: true });
   }
 
   async request(action, context = {}) {
     if (this.active) return false;
-    const floor = ++this.questionCounter;
-    const quizContext = { floor, ...context };
+    const sequence = ++this.questionCounter;
+    const quizContext = { ...context, poolMode: true };
     await window.quizEnsureQuestionAvailable?.(quizContext);
     const question = normalizeQuestion(window.pickQuestion?.("mix", quizContext));
     if (!question) return false;
@@ -89,7 +89,7 @@ export class ActionQuizGate {
     window.playQuizAudio?.(question, true);
 
     this.audioGuide?.event?.(`${actionTitle(action)}. ${question.text || question.q || ""}. ${question.translation ? `Русский перевод: ${question.translation}` : ""}`, {
-      id: `action-quiz-${action}-${floor}`,
+      id: `action-quiz-${action}-${sequence}`,
       priority: 3,
       interrupt: true,
       cooldown: 0,
@@ -101,6 +101,11 @@ export class ActionQuizGate {
   }
 
   _render(action, question) {
+    const pool = window.getQuizPoolState?.();
+    const sourceLabel = question.source === "generated" ? "ИИ" : "Fallback";
+    const poolLabel = pool
+      ? `${sourceLabel} · ${question.topic || question.level || ""} · пул ${pool.correct}/${pool.size} верно · ${pool.remaining} осталось`
+      : (question.topic || question.level || "");
     const translation = question.translation
       ? `<span class="question-translation"><b>Русский перевод:</b> ${escapeHtml(question.translation)}</span>`
       : "";
@@ -110,7 +115,7 @@ export class ActionQuizGate {
     this.panel.innerHTML = `
       <div class="action-quiz-head">
         <b>${escapeHtml(actionTitle(action))}</b>
-        <span>${escapeHtml(question.topic || question.level || "")}</span>
+        <span>${escapeHtml(poolLabel)}</span>
       </div>
       <div class="action-quiz-question">${body}</div>
       <div class="action-quiz-options">

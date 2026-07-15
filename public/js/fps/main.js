@@ -311,7 +311,15 @@ class WaldwachtGame {
       this.ui.startGame();
       this.ui.toast(`${selection.mode === "recall" ? "Воспроизведение" : "Узнавание"} · ${selection.story.title}`, 4300);
       if (this.performance.profile.id === "low") this.ui.toast("Режим слабого ПК: облегчённый лес и быстрый рендер", 4800);
-      this.learning.prepare(30).catch((error) => console.warn("Quiz preparation failed:", error));
+      this.learning.prepare(10)
+        .then((result) => {
+          if (result?.generated) this.ui.toast("ИИ подготовил новый пул: 10 уникальных вопросов", 5000);
+          else this.ui.toast("ИИ не настроен — используется локальный пул из 10 вопросов", 5000);
+        })
+        .catch((error) => {
+          console.warn("Quiz preparation failed:", error);
+          this.ui.toast(`Генерация ИИ не удалась: ${error.message}`, 8000);
+        });
       if (!this.runtime.dev) this.input.requestLock();
     };
     this.ui.elements.startButton.addEventListener("click", () => startGame(true));

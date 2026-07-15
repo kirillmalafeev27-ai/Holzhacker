@@ -17,6 +17,7 @@ import { PerformanceDetector, detectHardwareProfile, shouldKeepDecoration } from
 
 const require = createRequire(import.meta.url);
 const { localEvaluation } = require("../recall-evaluation.cjs");
+const { __test: quizGenerationTest } = require("../see-escape-claude-practical-gates-bDFmc/quiz-generation.cjs");
 
 
 const passed = [];
@@ -471,14 +472,14 @@ assert.equal(isEditableTarget({ tagName: "CANVAS", isContentEditable: false }), 
 pass("N typing ignores movement bindings");
 
 
-// O — both test modes return wrong answers to the retry pool, and the bank
+// O — both test modes return wrong answers to the active pool, and the bank
 // exposes the paired accept path so a later correct retry can be retired.
 const recognitionSource = fs.readFileSync(new URL("../see-escape-claude-practical-gates-bDFmc/public/js/action-quiz.js", import.meta.url), "utf8");
 const recallSource = fs.readFileSync(new URL("../public/js/fps/learning-system.js", import.meta.url), "utf8");
 const bankSource = fs.readFileSync(new URL("../see-escape-claude-practical-gates-bDFmc/public/js/learning.js", import.meta.url), "utf8");
 assert.match(recognitionSource, /releaseQuizQuestion/);
 assert.match(recallSource, /releaseQuizQuestion/);
-assert.match(bankSource, /retryQueue/);
+assert.match(bankSource, /this\.generatedPools\[key\]\.push\(question\.raw\)/);
 assert.match(bankSource, /acceptQuizQuestion/);
 pass("O wrong questions return to pool");
 
@@ -488,10 +489,11 @@ pass("O wrong questions return to pool");
 const generationSource = fs.readFileSync(new URL("../see-escape-claude-practical-gates-bDFmc/quiz-generation.cjs", import.meta.url), "utf8");
 const evaluationSource = fs.readFileSync(new URL("../recall-evaluation.cjs", import.meta.url), "utf8");
 assert.match(generationSource, /translationLine/);
-assert.match(generationSource, /Перевод: \.\.\./);
+assert.match(generationSource, /"translation": "Полный русский перевод/);
+assert.match(generationSource, /gueltigen JSON-Array/);
 assert.match(generationSource, /verbindliche Zielbedeutung/);
 assert.match(bankSource, /Поезд прибывает в 9 часов/);
-assert.match(bankSource, /see-escape\.quiz\.pool\.v2/);
+assert.match(bankSource, /see-escape\.quiz\.pool\.v3/);
 assert.match(recognitionSource, /question\.translation/);
 assert.match(recallSource, /translation: question\.translation/);
 assert.match(evaluationSource, /payload\.translation/);
@@ -547,5 +549,45 @@ assert.equal(lowDocument.nodes.length, optimizedDocument.nodes.length);
 pass("R automatic weak-PC profile");
 
 
-console.log(`FIRST_PERSON_LOGIC_OK ${passed.length}/20`);
+// S — Waldwacht uses a strict ten-question AI cycle instead of floor-bound
+// questions: wrong answers remain, ten correct answers trigger regeneration,
+// and malformed/duplicate model output cannot be silently padded by fallback.
+const generatedFixture = Array.from({ length: 10 }, (_, index) => ({
+  text: "Впиши немецкую форму, чтобы получился указанный перевод.",
+  display: `Neue Aufgabe ${index + 1}: Ich ___ heute im Wald.`,
+  translation: `Новое задание ${index + 1}: Сегодня я нахожусь в лесу.`,
+  options: ["bin", "bist", "seid", "sind"],
+  correct: 0,
+}));
+const parsedFixture = quizGenerationTest.parseJsonQuestions(JSON.stringify(generatedFixture), 10);
+assert.equal(parsedFixture.length, 10);
+assert.equal(quizGenerationTest.parseJsonQuestions(JSON.stringify([...generatedFixture, generatedFixture[0]]), 20).length, 10);
+const strictPrompt = quizGenerationTest.buildSyntheticPrompt({
+  level: "A2",
+  lexicalTopic: "Natur & Tiere",
+  grammarTopic: "weil-Sätze",
+  isWortstellung: false,
+  questionsCount: 10,
+  exclude: ["Ich bleibe zu Hause, weil ..."],
+  topicRule: "Das finite Verb steht am Ende.",
+});
+assert.match(strictPrompt, /gueltigen JSON-Array/);
+assert.match(strictPrompt, /exakt 10 neue Objekte/);
+assert.match(strictPrompt, /Ich bleibe zu Hause/);
+assert.match(bankSource, /const WALD_POOL_SIZE = 10/);
+assert.match(bankSource, /poolCorrect\[key\] % this\.poolSize === 0/);
+assert.match(bankSource, /strict: true/);
+assert.match(bankSource, /resumed: true/);
+const directTakeBlock = bankSource.match(/takeFromPool\([\s\S]*?takeAudioFromPool/);
+assert.ok(directTakeBlock);
+assert.doesNotMatch(directTakeBlock[0], /saveRestartPoolSnapshot/);
+assert.doesNotMatch(generationSource, /const questionPool =/);
+assert.match(generationSource, /exclude\.slice\(-80\)/);
+assert.match(recognitionSource, /poolMode: true/);
+assert.doesNotMatch(recognitionSource, /const quizContext = \{ floor/);
+assert.match(recallSource, /poolMode: true/);
+pass("S strict ten-question AI cycle");
+
+
+console.log(`FIRST_PERSON_LOGIC_OK ${passed.length}/21`);
 console.log(passed.join(" | "));

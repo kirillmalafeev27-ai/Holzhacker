@@ -131,8 +131,10 @@
   ];
 
   const STORAGE_KEY = 'see-escape.learning.v2';
-  // v2 invalidates old cached grammar questions that had no target translation.
-  const POOL_STORAGE_KEY = 'see-escape.quiz.pool.v2';
+  // v3 invalidates mixed generated/fallback decks from the old floor-based
+  // implementation. Waldwacht now uses strict ten-question AI cycles.
+  const POOL_STORAGE_KEY = 'see-escape.quiz.pool.v3';
+  const WALD_POOL_SIZE = 10;
   const COOP_DECK_KEY = 'quiz-deck';
   const LEGACY_STORAGE_KEY = 'mosty.learning.v1';
   const DEFAULT_GRAMMAR_TOPIC = 'Präsens';
@@ -266,13 +268,18 @@
           : validGrammarQuestion(question));
         if (valid.length) generatedPools[key] = valid;
       }
-      return { generatedPools };
+      const poolCorrect = {};
+      for (const [key, value] of Object.entries(saved.poolCorrect || {})) {
+        const count = Math.max(0, Number(value) || 0);
+        if (count) poolCorrect[key] = count;
+      }
+      return { generatedPools, poolCorrect };
     } catch (_) {
       return null;
     }
   }
 
-  function savePoolSnapshot(settings, generatedPools) {
+  function savePoolSnapshot(settings, generatedPools, poolCorrect = {}) {
     try {
       const snapshot = {};
       for (const [key, value] of Object.entries(generatedPools || {})) {
@@ -285,6 +292,7 @@
         signature: settingsSignature(settings),
         savedAt: Date.now(),
         generatedPools: snapshot,
+        poolCorrect,
       }));
     } catch (_) {
       // Private mode / quota errors are harmless here.
@@ -300,6 +308,11 @@
       this.fallbackCursor = 0;
       this.audioCursor = 0;
       this.generatedPools = savedPoolSnapshot?.generatedPools || Object.create(null);
+      this.poolCorrect = savedPoolSnapshot?.poolCorrect || Object.create(null);
+      this.poolMode = false;
+      this.poolSize = WALD_POOL_SIZE;
+      this.activePoolKey = '';
+      this.lastGenerationMeta = null;
       this.retryQueue = [];
       this.questionsSinceRetry = 0;
       this.sharedDeck = null;
@@ -323,6 +336,8 @@
       this.settings.grammarSlots = (this.settings.grammarSlots || DEFAULT_SLOTS).map((topic, i) => normalizeTopic(topic || DEFAULT_SLOTS[i % DEFAULT_SLOTS.length]));
       if (settingsSignature(this.settings) !== previousSignature) {
         this.generatedPools = Object.create(null);
+        this.poolCorrect = Object.create(null);
+        this.activePoolKey = '';
         this.retryQueue = [];
         this.questionsSinceRetry = 0;
         this.usedDisplays = Object.create(null);
@@ -360,22 +375,27 @@
     }
 
     pickQuestion(cat = 'mix', context = {}) {
-      if (cat === 'mix' && this.retryQueue.length && this.questionsSinceRetry >= 1) {
+      const directPool = this.poolMode || Boolean(context.poolMode);
+      if (!directPool && cat === 'mix' && this.retryQueue.length && this.questionsSinceRetry >= 1) {
         this.questionsSinceRetry = 0;
         return JSON.parse(JSON.stringify(this.retryQueue.shift()));
       }
-      if (cat === 'mix' && this.retryQueue.length) this.questionsSinceRetry += 1;
+      if (!directPool && cat === 'mix' && this.retryQueue.length) this.questionsSinceRetry += 1;
       if (cat !== 'mix' || this.settings.mode === 'classic') return pickLegacyQuestion(cat);
-      return this.pickGrammarQuestion(context);
+      return this.pickGrammarQuestion({ ...context, poolMode: directPool });
     }
 
     pickGrammarQuestion(context) {
-      const shared = this.sharedQuestion(context.floor || 1);
-      if (shared) return shared;
+      if (!context.poolMode) {
+        const shared = this.sharedQuestion(context.floor || 1);
+        if (shared) return shared;
+      }
       const slot = this.slotForBridge(context.floor || 0);
-      const generated = this.takeFromPool(this.slotKey(slot), slot);
-      if (this.generationAllowed) this.ensurePool(slot);
-      return generated || this.fallbackQuestion(slot);
+      const key = this.slotKey(slot);
+      const generated = this.takeFromPool(key, slot, context.poolMode);
+      if (!context.poolMode && this.generationAllowed) this.ensurePool(slot);
+      if (generated) return generated;
+      return this.status.generationConfigured ? null : this.fallbackQuestion(slot);
     }
 
     pickAudioQuestion() {
@@ -394,9 +414,12 @@
       await this.statusPromise;
       this.generationAllowed = true;
       this.settings.mode = 'grammar';
-      const floors = Math.max(1, Math.min(20, Number(options.floors) || 8));
+      this.poolMode = Boolean(options.poolMode);
+      this.poolSize = this.poolMode ? WALD_POOL_SIZE : Math.max(1, Math.min(20, Number(options.floors) || 8));
+      const floors = this.poolSize;
       const startFloor = Math.max(1, Number(options.startFloor) || 1);
       const slot = this.slotForBridge(startFloor);
+      this.activePoolKey = this.slotKey(slot);
       if (window.SeaCoop?.enabled && !window.SeaCoop.isHost) {
         window.SeaCoop.updateUi?.("Ждём общие задания от капитана комнаты...", "warn");
         const deck = await this.waitForSharedDeck(floors, 12000, startFloor);
@@ -408,28 +431,47 @@
       }
       if (!this.status.generationConfigured) {
         this.seedFallbackPool(slot, floors);
-        this.buildSharedDeck(slot, floors, startFloor);
-        this.publishSharedDeck(floors, startFloor);
+        if (!this.poolMode) {
+          this.buildSharedDeck(slot, floors, startFloor);
+          this.publishSharedDeck(floors, startFloor);
+        }
         this.saveRestartPoolSnapshot();
         this.renderSettingsMenu();
-        return { ok: true, generated: false };
+        return { ok: true, generated: false, count: floors, poolSize: floors };
+      }
+
+      // Resume an unfinished ten-question cycle exactly where it stopped.
+      // Topping it back up to ten here would mix the next generated batch into
+      // the current one and delay the required refresh boundary.
+      const resumedCount = this.generatedPools[this.activePoolKey]?.length || 0;
+      if (this.poolMode && resumedCount > 0) {
+        this.renderSettingsMenu();
+        return {
+          ok: true,
+          generated: true,
+          resumed: true,
+          count: resumedCount,
+          poolSize: floors,
+          meta: this.lastGenerationMeta,
+        };
       }
 
       this.preparing = true;
       this.renderSettingsMenu();
       try {
-        const pool = await this.ensurePool(slot, floors, floors);
+        const pool = await this.ensurePool(slot, floors, floors, { strict: this.poolMode });
         if ((pool?.length || 0) < floors) {
+          if (this.poolMode) throw new Error(`ИИ не подготовил полный пул ${pool?.length || 0}/${floors}`);
           this.seedFallbackPool(slot, floors);
+        }
+        if (!this.poolMode) {
           this.buildSharedDeck(slot, floors, startFloor);
           this.publishSharedDeck(floors, startFloor);
-          this.saveRestartPoolSnapshot();
-          return { ok: true, generated: false };
+        } else {
+          this.sharedDeck = null;
         }
-        this.buildSharedDeck(slot, floors, startFloor);
-        this.publishSharedDeck(floors, startFloor);
         this.saveRestartPoolSnapshot();
-        return { ok: true, generated: true };
+        return { ok: true, generated: true, count: floors, poolSize: floors, meta: this.lastGenerationMeta };
       } finally {
         this.preparing = false;
         this.renderSettingsMenu();
@@ -451,7 +493,20 @@
     }
 
     saveRestartPoolSnapshot() {
-      savePoolSnapshot(this.settings, this.generatedPools);
+      savePoolSnapshot(this.settings, this.generatedPools, this.poolCorrect);
+    }
+
+    poolState() {
+      const key = this.activePoolKey || this.slotKey(this.slotForBridge(0));
+      const totalCorrect = Math.max(0, Number(this.poolCorrect[key]) || 0);
+      return {
+        size: this.poolSize || WALD_POOL_SIZE,
+        correct: totalCorrect % (this.poolSize || WALD_POOL_SIZE),
+        totalCorrect,
+        remaining: this.generatedPools[key]?.length || 0,
+        generating: Boolean(this.fetching[key]),
+        source: this.status.generationConfigured ? 'ai' : 'fallback',
+      };
     }
 
     normalizedFloor(floor = 1) {
@@ -593,18 +648,20 @@
       if (!source.length) return this.generatedPools[key] || [];
       const next = [...(this.generatedPools[key] || [])];
       for (let i = 0; next.length < minCount; i += 1) {
-        next.push({ ...source[i % source.length] });
+        next.push({ ...source[i % source.length], _fallback: true });
       }
       this.generatedPools[key] = next;
       return next;
     }
 
-    takeFromPool(key, slot) {
+    takeFromPool(key, slot, poolMode = false) {
       const pool = this.generatedPools[key];
       if (!pool || !pool.length) return null;
       const raw = pool.shift();
       this.rememberUsedDisplay(key, raw.display);
-      return this.formatGrammarQuestion(raw, slot, true, key);
+      // Persist only after accept/release. If the page reloads while this
+      // question is open, it remains in the saved pool and is shown again.
+      return this.formatGrammarQuestion(raw, slot, !raw._fallback, key, poolMode);
     }
 
     takeAudioFromPool(key) {
@@ -617,6 +674,18 @@
 
     releaseQuestion(question) {
       if (!question) return;
+      if (question.poolMode && question.raw && question.poolKey) {
+        const key = question.poolKey;
+        if (!this.generatedPools[key]) this.generatedPools[key] = [];
+        const rawKey = this.rawQuestionIdentity(question.raw);
+        if (!this.generatedPools[key].some((raw) => this.rawQuestionIdentity(raw) === rawKey)) {
+          // Wrong questions stay in the same ten-question cycle, but go to the
+          // back so the learner does not see an immediate duplicate.
+          this.generatedPools[key].push(question.raw);
+        }
+        this.saveRestartPoolSnapshot();
+        return;
+      }
       const retryKey = this.questionIdentity(question);
       if (retryKey && !this.retryQueue.some((item) => this.questionIdentity(item) === retryKey)) {
         const retry = JSON.parse(JSON.stringify(question));
@@ -641,6 +710,20 @@
 
     acceptQuestion(question) {
       if (!question) return;
+      if (question.poolMode && question.poolKey) {
+        const key = question.poolKey;
+        this.poolCorrect[key] = Math.max(0, Number(this.poolCorrect[key]) || 0) + 1;
+        this.saveRestartPoolSnapshot();
+        if (this.poolCorrect[key] % this.poolSize === 0 && !(this.generatedPools[key]?.length)) {
+          const slot = question.poolSlot || this.slotForBridge(0);
+          this.ensurePool(slot, this.poolSize, this.poolSize, { strict: true })
+            .catch((error) => {
+              this.lastError = error?.message || 'generation failed';
+              this.renderSettingsMenu();
+            });
+        }
+        return;
+      }
       const identity = this.questionIdentity(question);
       if (identity) this.retryQueue = this.retryQueue.filter((item) => this.questionIdentity(item) !== identity);
       if (question.raw && question.poolKey && this.generatedPools[question.poolKey]) {
@@ -662,6 +745,10 @@
     }
 
     poolHasQuestion(context = {}) {
+      if (this.poolMode || context.poolMode) {
+        const key = this.slotKey(this.slotForBridge(0));
+        return !this.status.generationConfigured || (this.generatedPools[key]?.length || 0) > 0;
+      }
       if (this.sharedDeckHasRange(context.floor || 1, 1)) return true;
       if (!this.generationAllowed) return true;
       if (!this.status.generationConfigured) return true;
@@ -671,6 +758,30 @@
 
     async ensureQuestionAvailable(context = {}) {
       const floor = this.normalizedFloor(context.floor || 1);
+      const directPool = this.poolMode || Boolean(context.poolMode);
+      if (directPool) {
+        await this.statusPromise;
+        const slot = this.slotForBridge(0);
+        const key = this.slotKey(slot);
+        this.activePoolKey = key;
+        if ((this.generatedPools[key]?.length || 0) > 0) return;
+        if (!this.status.generationConfigured) {
+          this.seedFallbackPool(slot, this.poolSize);
+          this.saveRestartPoolSnapshot();
+          return;
+        }
+        this.preparing = true;
+        this.renderSettingsMenu();
+        try {
+          const pool = await this.ensurePool(slot, this.poolSize, this.poolSize, { strict: true });
+          if ((pool?.length || 0) < this.poolSize) throw new Error(`ИИ не подготовил полный пул ${pool?.length || 0}/${this.poolSize}`);
+          this.saveRestartPoolSnapshot();
+          return;
+        } finally {
+          this.preparing = false;
+          this.renderSettingsMenu();
+        }
+      }
       if (this.sharedDeckHasRange(floor, 1)) return;
       await this.statusPromise;
       if (!this.generationAllowed) return;
@@ -704,12 +815,14 @@
       }
     }
 
-    ensurePool(slot, minCount = 1, requestCount = 10) {
+    ensurePool(slot, minCount = 1, requestCount = 10, { strict = false } = {}) {
       if (!this.status.generationConfigured) return Promise.resolve([]);
       const key = this.slotKey(slot);
       if ((this.generatedPools[key]?.length || 0) >= minCount) return Promise.resolve(this.generatedPools[key]);
       if (this.fetching[key]) return this.fetching[key];
-      const seen = Array.from(this.usedDisplays[key] || []).slice(-12);
+      const fallbackDisplays = GERMAN_QUESTION_POOL.map((question) => question.display).filter(Boolean);
+      const usedDisplays = Array.from(this.usedDisplays[key] || []);
+      const seen = [...new Set([...fallbackDisplays, ...usedDisplays])].slice(-80);
       const count = Math.max(1, Math.min(20, Number(requestCount) || 10));
       this.fetching[key] = fetch('/api/generate-questions', {
         method: 'POST',
@@ -723,16 +836,31 @@
           exclude: seen,
         }),
       })
-        .then((response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
+        .then(async (response) => {
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+          return data;
+        })
         .then((data) => {
           const valid = (data.questions || []).filter(validGrammarQuestion);
-          this.generatedPools[key] = [...(this.generatedPools[key] || []), ...shuffle(valid)];
+          const existing = new Set((this.generatedPools[key] || []).map((question) => this.rawQuestionIdentity(question)));
+          const unique = valid.filter((question) => {
+            const identity = this.rawQuestionIdentity(question);
+            if (!identity || existing.has(identity)) return false;
+            existing.add(identity);
+            return true;
+          });
+          if (strict && unique.length !== count) throw new Error(`ИИ вернул неполный уникальный пул ${unique.length}/${count}`);
+          this.generatedPools[key] = [...(this.generatedPools[key] || []), ...shuffle(unique)];
+          this.lastGenerationMeta = data.meta || { generated: true, count: unique.length };
           this.lastError = '';
+          this.saveRestartPoolSnapshot();
           return this.generatedPools[key];
         })
         .catch((error) => {
-          console.warn('See Escape quiz generation fallback:', error);
+          console.warn('See Escape strict AI quiz generation failed:', error);
           this.lastError = error?.message || 'generation failed';
+          if (strict) throw error;
           return [];
         })
         .finally(() => {
@@ -801,7 +929,7 @@
       return this.formatAudioQuestion(raw, true, this.audioKey());
     }
 
-    formatGrammarQuestion(raw, slot, generated, poolKey = '') {
+    formatGrammarQuestion(raw, slot, generated, poolKey = '', poolMode = false) {
       const correctAnswer = raw.options[raw.correct];
       const choices = shuffle(raw.options);
       return {
@@ -815,8 +943,10 @@
         correctIndex: choices.indexOf(correctAnswer),
         correct: correctAnswer,
         generated,
-        poolKey: generated ? poolKey : '',
-        raw: generated ? raw : null,
+        poolKey,
+        raw,
+        poolMode,
+        poolSlot: { grammarTopic: slot.grammarTopic, isWortstellung: slot.isWortstellung, bridgeIndex: slot.bridgeIndex || 0 },
         source: generated ? 'generated' : 'german-fallback',
       };
     }
@@ -846,12 +976,12 @@
       if (!root) return;
       const fetchingNow = this.preparing || Object.keys(this.fetching).length > 0;
       const statusKind = this.status.generationConfigured
-        ? (this.lastError ? 'fallback' : fetchingNow ? 'loading' : 'online')
+        ? (this.lastError ? 'error' : fetchingNow ? 'loading' : 'online')
         : 'fallback';
       const statusText = this.preparing
         ? 'AI готовит стартовые вопросы'
         : this.lastError
-        ? 'AI не ответил, fallback'
+        ? `Ошибка AI: ${this.lastError}`
         : statusKind === 'loading'
         ? 'AI подгружает вопросы'
         : statusKind === 'online'
@@ -1044,6 +1174,7 @@
   window.acceptQuizQuestion = (question) => bank.acceptQuestion(question);
   window.quizPoolHasQuestion = (context) => bank.poolHasQuestion(context);
   window.quizEnsureQuestionAvailable = (context) => bank.ensureQuestionAvailable(context);
+  window.getQuizPoolState = () => bank.poolState();
   window.playQuizAudio = (question, force) => AudioQuiz.play(question, force);
   window.replayQuizAudio = () => AudioQuiz.replay();
 

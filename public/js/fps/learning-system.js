@@ -114,8 +114,8 @@ class RecallQuizGate {
 
   async request(action, context = {}) {
     if (this.active) return false;
-    const floor = ++this.questionCounter;
-    const quizContext = { floor, ...context };
+    this.questionCounter += 1;
+    const quizContext = { ...context, poolMode: true };
     await window.quizEnsureQuestionAvailable?.(quizContext);
     const question = normalizeQuestion(window.pickQuestion?.("mix", quizContext));
     if (!question) return false;
@@ -129,6 +129,11 @@ class RecallQuizGate {
   }
 
   render(question) {
+    const pool = window.getQuizPoolState?.();
+    const sourceLabel = question.source === "generated" ? "ИИ" : "Fallback";
+    const poolLabel = pool
+      ? `${sourceLabel} · ${question.topic || question.level || ""} · пул ${pool.correct}/${pool.size} верно · ${pool.remaining} осталось`
+      : (question.topic || question.level || "");
     const translation = question.translation
       ? `<span class="question-translation"><b>Русский перевод:</b> ${escapeHtml(question.translation)}</span>`
       : "";
@@ -138,7 +143,7 @@ class RecallQuizGate {
     this.panel.innerHTML = `
       <div class="action-quiz-head">
         <b>Тест на воспроизведение</b>
-        <span>${escapeHtml(question.topic || question.level || "")}</span>
+        <span>${escapeHtml(poolLabel)}</span>
       </div>
       <div class="action-quiz-question">${visibleQuestion}</div>
       <form class="recall-answer-form">
@@ -331,8 +336,8 @@ export class LearningSystem {
     return { mode: this.mode, storyIndex: this.storyIndex, story: STORY_TREASURE_RUNS[this.storyIndex] };
   }
 
-  prepare(count = 30) {
-    return this.recognition.prepare(count);
+  prepare(_count = 10) {
+    return this.recognition.prepare(10);
   }
 
   async request(action, context = {}) {

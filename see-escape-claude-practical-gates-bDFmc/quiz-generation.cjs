@@ -1,4 +1,3 @@
-const questionPool = Object.create(null);
 const audioQuestionPool = Object.create(null);
 const ttsAudioCache = new Map();
 const fs = require('node:fs');
@@ -258,12 +257,52 @@ function parseSyntheticQuestions(rawText, expectedCount) {
   return parsed;
 }
 
-function parseJsonQuestions(rawText) {
+function normalizeSyntheticQuestion(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const text = stripOuterQuotes(raw.text || raw.instruction || 'Впиши немецкую форму, чтобы получился указанный перевод.');
+  const display = stripOuterQuotes(raw.display || raw.sentence || raw.satz || raw.task);
+  const translation = stripOuterQuotes(raw.translation || raw.russianTranslation || raw.ru);
+  const options = Array.isArray(raw.options)
+    ? raw.options.map((option) => stripOuterQuotes(option)).filter(Boolean)
+    : [];
+  const numericCorrect = Number(raw.correct);
+  let correct = Number.isInteger(numericCorrect) ? numericCorrect : answerLetterToIndex(raw.correct);
+  if (!Number.isInteger(correct) && raw.correctAnswer) {
+    const target = normalizeAnswerText(raw.correctAnswer);
+    correct = options.findIndex((option) => normalizeAnswerText(option) === target);
+  }
+  const question = { text, display, translation, options, correct };
+  if (!display || !translation || !/[А-Яа-яЁё]/.test(translation)) return null;
+  if (options.length !== 4 || new Set(options.map(normalizeAnswerText)).size !== 4) return null;
+  return isValidQuestion(question) ? question : null;
+}
+
+function questionIdentity(question) {
+  return [question.display, question.translation, ...(question.options || [])]
+    .map(normalizeAnswerText)
+    .join('|');
+}
+
+function uniqueQuestions(questions, expectedCount) {
+  const seen = new Set();
+  const unique = [];
+  for (const question of questions) {
+    const identity = questionIdentity(question);
+    if (!identity || seen.has(identity)) continue;
+    seen.add(identity);
+    unique.push(question);
+    if (unique.length >= expectedCount) break;
+  }
+  return unique;
+}
+
+function parseJsonQuestions(rawText, expectedCount = 20) {
   const text = String(rawText || '').trim();
   const jsonMatch = text.match(/\[[\s\S]*\]/);
   const jsonStr = jsonMatch ? jsonMatch[0] : text;
   const parsed = JSON.parse(jsonStr);
-  return Array.isArray(parsed) ? parsed.filter(isValidQuestion) : [];
+  if (!Array.isArray(parsed)) return [];
+  return uniqueQuestions(parsed.map(normalizeSyntheticQuestion).filter(Boolean), expectedCount);
 }
 
 function stripOuterQuotes(value) {
@@ -417,13 +456,13 @@ function parseJsonAudioQuestions(rawText, expectedCount, level, lexicalTopic) {
 function buildSyntheticPrompt({ level, lexicalTopic, grammarTopic, isWortstellung, questionsCount, exclude, topicRule }) {
   const ruleBlock = topicRule ? `\nSpezifische Regel fuer "${grammarTopic}":\n${topicRule}\n` : '';
   const excludeBlock = exclude && exclude.length
-    ? `\nVerwende diese Saetze nicht erneut: ${exclude.slice(-10).map((item) => `"${item}"`).join(', ')}\n`
+    ? `\nVERBOTENE SAETZE UND VORLAGEN — weder kopieren noch leicht umformulieren:\n${exclude.slice(-80).map((item) => `- ${item}`).join('\n')}\n`
     : '';
   const kind = isWortstellung
-    ? 'Wortstellungsuebungen. Die Aufgabe-Zeile enthaelt durcheinander gebrachte Woerter oder Satzteile.'
-    : 'Lueckenuebungen. Die Aufgabe-Zeile enthaelt einen deutschen Satz mit genau einer Luecke ___.';
+    ? 'Wortstellungsuebungen. "display" enthaelt durcheinander gebrachte Woerter oder Satzteile.'
+    : 'Lueckenuebungen. "display" enthaelt einen deutschen Satz mit genau einer Luecke ___. ';
 
-  return `Du bist ein erfahrener DaF-Lehrer und erstellst Multiple-Choice-Uebungen.
+  return `Du bist ein erfahrener DaF-Lehrer. Erstelle eine neue, abwechslungsreiche Zehnerkollektion fuer ein Lernspiel.
 
 Erstelle genau ${questionsCount} deutsche Grammatikuebungen.
 Niveau: ${level}. Verwende keine Grammatik und keinen Wortschatz ueber ${level}.
@@ -432,39 +471,28 @@ Lexikalisches Thema: ${lexicalTopic || 'frei'}.
 Uebungstyp: ${kind}
 ${ruleBlock}${excludeBlock}
 Qualitaetsregeln:
-1. Jede Aufgabe hat genau vier Antwortmoeglichkeiten A, B, C, D.
+1. Jede Aufgabe hat genau vier verschiedene Antwortmoeglichkeiten in "options".
 2. Schreibe fuer JEDE Aufgabe eine vollstaendige, natuerliche russische Uebersetzung des mit der richtigen Option vervollstaendigten deutschen Satzes.
-3. Die russische Uebersetzung ist die verbindliche Zielbedeutung. Sie muss Bedeutungsunterschiede eindeutig ausdruecken, zum Beispiel "ankommen" = "прибывать" und "abfahren" = "отправляться".
+3. Die russische Uebersetzung ist die verbindliche Zielbedeutung und muss Bedeutungsunterschiede eindeutig ausdruecken.
 4. Bezogen auf diese russische Zielbedeutung darf genau eine Option grammatisch UND semantisch richtig sein. Eine anders gemeinte, aber grammatisch korrekte Alternative ist als richtige Antwort verboten.
 5. Die falschen Antworten sind plausibel, aber fuer die angegebene russische Uebersetzung eindeutig falsch.
 6. Die richtige Antwort muss absolut korrekt sein. Wenn du unsicher bist, formuliere die Aufgabe neu.
-7. Loese jede deiner Aufgaben selbst und schreibe die Schluessel erst nach der Selbstpruefung.
-8. In den Loesungen muss der Buchstabe und der exakte Text der richtigen Option stehen.
-9. Keine abgeschnittenen Saetze. Keine Erklaerungen. Kein JSON. Kein Markdown.
+7. Alle ${questionsCount} Aufgaben muessen untereinander verschieden sein. Kopiere KEIN Beispiel aus der Grammatikregel und keinen verbotenen Satz.
+8. "correct" ist der nullbasierte Index 0, 1, 2 oder 3 der richtigen Option.
+9. Keine abgeschnittenen Saetze. Keine Erklaerungen. Kein Markdown.
 
-Ausgabeformat, exakt so:
-AUFGABEN
-1. Anweisung: Впиши немецкую форму, чтобы получился указанный перевод.
-Satz: ...
-Перевод: ...
-A) ...
-B) ...
-C) ...
-D) ...
+Antworte ausschliesslich mit einem gueltigen JSON-Array in diesem Schema:
+[
+  {
+    "text": "Впиши немецкую форму, чтобы получился указанный перевод.",
+    "display": "Ein neuer deutscher Satz mit ___.",
+    "translation": "Полный русский перевод законченного предложения.",
+    "options": ["Option A", "Option B", "Option C", "Option D"],
+    "correct": 0
+  }
+]
 
-2. Anweisung: Впиши немецкую форму, чтобы получился указанный перевод.
-Satz: ...
-Перевод: ...
-A) ...
-B) ...
-C) ...
-D) ...
-
-LOESUNGEN
-1: A = exakter Text der Option A
-2: C = exakter Text der Option C
-
-Schreibe jetzt den vollstaendigen Block mit ${questionsCount} Aufgaben und danach den Loesungen.`;
+Schreibe jetzt exakt ${questionsCount} neue Objekte.`;
 }
 
 function buildAudioPrompt({ level, lexicalTopic, questionsCount, exclude }) {
@@ -533,7 +561,7 @@ async function requestAiText(prompt, maxTokens) {
 
       const data = JSON.parse(bodyText);
       const content = data.choices?.[0]?.message?.content;
-      if (content && content.trim()) return content.trim();
+      if (content && content.trim()) return { text: content.trim(), model };
       errors.push(`${model}: empty response`);
     } catch (error) {
       errors.push(`${model}: ${error?.name === 'AbortError' ? `timeout after ${AI_TIMEOUT_MS}ms` : error?.message || String(error)}`);
@@ -596,6 +624,8 @@ function installQuizRoutes(app) {
       aiProvider: aiProvider(),
       aiBaseUrl: aiBaseUrl(),
       models: AITUNNEL_MODELS,
+      strictQuestionPool: true,
+      questionPoolSize: 10,
       ttsProvider: ELEVENLABS_API_KEY ? 'elevenlabs' : 'browser-fallback',
       ttsVoiceId: ELEVENLABS_VOICE_ID,
       ttsModelId: ELEVENLABS_MODEL_ID,
@@ -610,11 +640,6 @@ function installQuizRoutes(app) {
     }
 
     const questionsCount = Math.max(1, Math.min(20, Number(count) || 10));
-    const cacheKey = `${level}:${grammarTopic}:${lexicalTopic || ''}:${isWortstellung ? 'w' : 'g'}`;
-    if (questionPool[cacheKey] && questionPool[cacheKey].length >= questionsCount) {
-      return res.json({ questions: questionPool[cacheKey].splice(0, questionsCount) });
-    }
-
     const prompt = buildSyntheticPrompt({
       level,
       lexicalTopic,
@@ -626,18 +651,29 @@ function installQuizRoutes(app) {
     });
 
     try {
-      const text = await requestAiText(prompt, 8192);
-      const valid = parseSyntheticQuestions(text, questionsCount);
-      if (!valid.length) {
-        return res.status(502).json({ error: 'No valid synthetic questions in LLM response' });
+      const generated = await requestAiText(prompt, 6144);
+      let valid;
+      try {
+        valid = parseJsonQuestions(generated.text, questionsCount);
+      } catch (jsonError) {
+        valid = parseSyntheticQuestions(generated.text, questionsCount);
       }
-
-      if (valid.length > questionsCount) {
-        if (!questionPool[cacheKey]) questionPool[cacheKey] = [];
-        questionPool[cacheKey].push(...valid.slice(questionsCount));
+      valid = uniqueQuestions(valid, questionsCount);
+      if (valid.length !== questionsCount) {
+        console.error(`AI quiz rejected: model=${generated.model} expected=${questionsCount} valid=${valid.length}`);
+        console.error(`AI quiz response sample: ${generated.text.slice(0, 700).replace(/\s+/g, ' ')}`);
+        return res.status(502).json({
+          error: `ИИ вернул неполный пул: ${valid.length}/${questionsCount}. Локальная подмена отключена; повторите генерацию.`,
+          expected: questionsCount,
+          valid: valid.length,
+          model: generated.model,
+        });
       }
-
-      res.json({ questions: valid.slice(0, questionsCount) });
+      console.info(`AI quiz ready: provider=${aiProvider()} model=${generated.model} count=${valid.length}`);
+      res.json({
+        questions: valid,
+        meta: { generated: true, provider: aiProvider(), model: generated.model, count: valid.length },
+      });
     } catch (error) {
       res.status(error.statusCode || 502).json({ error: error.message || 'Failed to generate questions' });
     }
@@ -661,7 +697,8 @@ function installQuizRoutes(app) {
     });
 
     try {
-      const text = await requestAiText(prompt, 4096);
+      const generated = await requestAiText(prompt, 4096);
+      const text = generated.text;
       let valid = [];
       try {
         valid = parseJsonAudioQuestions(text, Math.max(questionsCount, 10), level, lexicalTopic);
@@ -755,4 +792,7 @@ function installQuizRoutes(app) {
   });
 }
 
-module.exports = { installQuizRoutes };
+module.exports = {
+  installQuizRoutes,
+  __test: { buildSyntheticPrompt, parseJsonQuestions, parseSyntheticQuestions, uniqueQuestions },
+};
