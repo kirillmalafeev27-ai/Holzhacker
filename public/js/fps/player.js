@@ -4,114 +4,135 @@ import { CONFIG } from "./config.js";
 
 const UP = new THREE.Vector3(0, 1, 0);
 
+export function sweepCircle(start, end, center, radius, target=end) {
+  const dx = end.x - start.x;
+  const dz = end.z - start.z;
+  const fx = start.x - center.x;
+  const fz = start.z - center.z;
+  const startDistance = Math.hypot(fx, fz);
+  if (startDistance < radius) {
+    const nx = startDistance > 1e-5 ? fx / startDistance : (Math.abs(dx) > 1e-5 ? -Math.sign(dx) : 1);
+    const nz = startDistance > 1e-5 ? fz / startDistance : (Math.abs(dz) > 1e-5 ? -Math.sign(dz) : 0);
+    target.x = center.x + nx * radius;
+    target.z = center.z + nz * radius;
+    return true;
+  }
+  const a = dx * dx + dz * dz;
+  if (a < 1e-9) return false;
+  const b = 2 * (fx * dx + fz * dz);
+  const c = fx * fx + fz * fz - radius * radius;
+  const discriminant = b * b - 4 * a * c;
+  if (discriminant < 0) return false;
+  const root = Math.sqrt(discriminant);
+  const t = (-b - root) / (2 * a);
+  if (t < 0 || t > 1) return false;
+  const length = Math.sqrt(a);
+  target.x = start.x + dx * t - dx / length * .025;
+  target.z = start.z + dz * t - dz / length * .025;
+  return true;
+}
+
+export function sweepAabb(start, end, center, halfX, halfZ, target=end) {
+  const sx = start.x - center.x;
+  const sz = start.z - center.z;
+  const ex = end.x - center.x;
+  const ez = end.z - center.z;
+  const startsInside = Math.abs(sx) < halfX && Math.abs(sz) < halfZ;
+  if (startsInside) {
+    // Never trap a player who was already inside while a construction stage
+    // appeared: a movement that exits the box remains legal.
+    if (Math.abs(ex) >= halfX || Math.abs(ez) >= halfZ) return false;
+    const xGap = halfX - Math.abs(sx);
+    const zGap = halfZ - Math.abs(sz);
+    if (xGap < zGap) {
+      target.x = center.x + (sx >= 0 ? halfX : -halfX);
+      target.z = start.z;
+    } else {
+      target.x = start.x;
+      target.z = center.z + (sz >= 0 ? halfZ : -halfZ);
+    }
+    return true;
+  }
+
+  const dx = end.x - start.x;
+  const dz = end.z - start.z;
+  let enter = 0;
+  let exit = 1;
+  for (const [origin, delta, half] of [[sx, dx, halfX], [sz, dz, halfZ]]) {
+    if (Math.abs(delta) < 1e-9) {
+      if (origin < -half || origin > half) return false;
+      continue;
+    }
+    let near = (-half - origin) / delta;
+    let far = (half - origin) / delta;
+    if (near > far) [near, far] = [far, near];
+    enter = Math.max(enter, near);
+    exit = Math.min(exit, far);
+    if (enter > exit) return false;
+  }
+  if (enter < 0 || enter > 1) return false;
+  const length = Math.hypot(dx, dz);
+  const stop = Math.max(0, enter - (length > 1e-6 ? .025 / length : 0));
+  target.x = start.x + dx * stop;
+  target.z = start.z + dz * stop;
+  return true;
+}
+
 export class FirstPersonRig {
   constructor(camera, assets) {
     this.camera = camera;
     this.root = new THREE.Group();
     this.root.name = "FirstPersonRig";
     camera.add(this.root);
-    this.arms = assets.clone("arms");
-    this.axe = assets.clone("axe");
-    this.log = assets.clone("log");
-    this.stone = assets.clone("stone");
-    this.root.add(this.arms, this.log, this.stone);
-    this.arms.position.set(0, -.46, -.78);
-    this.arms.scale.setScalar(.92);
-    this.buildHands();
-    // The axe rides inside the arms group, anchored to the right fist, so the
-    // handle stays in the palm during the swing and arm recoil.
-    this.arms.add(this.axe);
-    this.axe.position.copy(this.rightHandAnchor).add(new THREE.Vector3(.015, -.13, -.03));
-    // Blade (head local +X) turned to face the tree, not sideways.
-    this.axe.rotation.set(.10, 1.05, -.38);
-    this.axe.scale.setScalar(.34 / .92);
-    this.log.position.set(0, -.54, -1.18);
-    this.log.rotation.set(0, 0, Math.PI / 2);
-    this.log.scale.setScalar(.9);
-    this.stone.position.copy(this.rightHandAnchor).multiplyScalar(.92).add(this.arms.position).add(new THREE.Vector3(0, .17, 0));
-    this.stone.scale.setScalar(1.1);
-    this.log.visible = false;
-    this.stone.visible = false;
+    this.poseRoot = new THREE.Group();
+    this.poseRoot.name = "FirstPersonPoseRoot";
+    this.root.add(this.poseRoot);
+    this.views = {
+      axe: assets.clone("viewAxe"),
+      log: assets.clone("viewLog"),
+      stone: assets.clone("viewStone"),
+    };
+    this.axe = this.views.axe;
+    this.log = this.views.log;
+    this.stone = this.views.stone;
+    for (const [mode, view] of Object.entries(this.views)) {
+      view.name = `FirstPerson${mode[0].toUpperCase()}${mode.slice(1)}View`;
+      this.poseRoot.add(view);
+    }
     this.mode = "axe";
     this.time = 0;
     this.swing = null;
     this.recoil = 0;
     this.interactionPulse = 0;
     this.root.traverse((object) => {
+      object.layers.set(1);
       if (object.isMesh) {
-        object.renderOrder = 100;
+        object.renderOrder = 0;
         if (Array.isArray(object.material)) {
           object.material = object.material.map((material) => {
             const clone = material.clone();
-            clone.depthTest = false;
+            clone.depthTest = true;
+            clone.depthWrite = true;
             return clone;
           });
         } else {
           object.material = object.material.clone();
-          object.material.depthTest = false;
+          object.material.depthTest = true;
+          object.material.depthWrite = true;
         }
         object.frustumCulled = false;
         object.castShadow = false;
       }
     });
-  }
-
-  buildHands() {
-    const rightHandMesh = this.arms.getObjectByName("Arm_1_Hand");
-    const leftHandMesh = this.arms.getObjectByName("Arm_-1_Hand");
-    const skin = (rightHandMesh?.material && !Array.isArray(rightHandMesh.material))
-      ? rightHandMesh.material
-      : new THREE.MeshStandardMaterial({ color: 0x80592f, roughness: .85 });
-    this.rightHandAnchor = rightHandMesh ? rightHandMesh.position.clone() : new THREE.Vector3(.24, -.30, -1.31);
-    const leftAnchor = leftHandMesh ? leftHandMesh.position.clone() : new THREE.Vector3(-.24, -.30, -1.31);
-    if (rightHandMesh) rightHandMesh.visible = false;
-    if (leftHandMesh) leftHandMesh.visible = false;
-    const right = this.makeHand(skin, 1, 1);
-    right.position.copy(this.rightHandAnchor).add(new THREE.Vector3(0, .015, -.05));
-    right.rotation.set(.10, 1.05, -.38);
-    const left = this.makeHand(skin, -1, .62);
-    left.position.copy(leftAnchor).add(new THREE.Vector3(0, .015, -.05));
-    left.rotation.set(.24, .30, .28);
-    this.arms.add(right, left);
-  }
-
-  makeHand(material, side, curl) {
-    // Chunky low-poly mitt sized to match the .28 m thick bracers.
-    const hand = new THREE.Group();
-    hand.name = side > 0 ? "HandRight" : "HandLeft";
-    const palm = new THREE.Mesh(new THREE.BoxGeometry(.105, .235, .185), material);
-    palm.position.set(side * -.085, -.008, .008);
-    palm.rotation.y = side * .12;
-    const knuckles = new THREE.Mesh(new THREE.BoxGeometry(.095, .205, .16), material);
-    knuckles.position.set(side * -.024, .02, .02);
-    hand.add(palm, knuckles);
-    const rows = [.094, .033, -.028, -.089];
-    for (let index = 0; index < rows.length; index += 1) {
-      const reach = .092 - Math.abs(index - 1) * .008;
-      this.addFingerArc(hand, material, side, rows[index], reach, 1.78, curl * (2.9 - index * .12));
-    }
-    // Thumb wraps the opposite way, lower on the grip.
-    this.addFingerArc(hand, material, side, -.102, .094, -1.85, -curl * 1.55, .052);
-    return hand;
-  }
-
-  addFingerArc(hand, material, side, y, radius, startAngle, wrap, thickness = .044) {
-    const segments = 4;
-    const segmentLength = Math.abs(wrap) * radius / segments + .016;
-    for (let index = 0; index < segments; index += 1) {
-      const angle = startAngle - wrap * (index + .5) / segments;
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(segmentLength, thickness, thickness), material);
-      mesh.position.set(side * Math.cos(angle) * radius, y + index * .006, Math.sin(angle) * radius);
-      mesh.rotation.y = side > 0 ? Math.atan2(-Math.cos(angle), -Math.sin(angle)) : Math.atan2(-Math.cos(angle), Math.sin(angle));
-      hand.add(mesh);
-    }
+    this.setMode("axe");
   }
 
   setMode(mode) {
+    if (!this.views[mode]) return false;
     this.mode = mode;
-    this.axe.visible = mode === "axe";
-    this.log.visible = mode === "log";
-    this.stone.visible = mode === "stone";
+    for (const [key, view] of Object.entries(this.views)) view.visible = key === mode;
+    this.poseRoot.rotation.set(0, 0, 0);
+    return true;
   }
 
   startSwing(onImpact) {
@@ -150,17 +171,16 @@ export class FirstPersonRig {
     const t = Math.min(1, this.swing.time / CONFIG.CHOP.SWING_DURATION);
     const windup = t < .32 ? t / .32 : 1 - (t - .32) / .68;
     const strike = Math.sin(Math.min(1, t / .72) * Math.PI);
-    this.axe.rotation.x = .10 - strike * 1.12;
-    this.axe.rotation.z = -.38 + windup * .48;
-    this.arms.rotation.x = -strike * .22;
+    this.poseRoot.rotation.x = -strike * .78;
+    this.poseRoot.rotation.y = strike * .12;
+    this.poseRoot.rotation.z = windup * .18;
     if (!this.swing.impacted && this.swing.time >= CONFIG.CHOP.IMPACT_TIME) {
       this.swing.impacted = true;
       this.swing.onImpact?.();
     }
     if (t >= 1) {
       this.swing = null;
-      this.axe.rotation.set(.10, 1.05, -.38);
-      this.arms.rotation.set(0, 0, 0);
+      this.poseRoot.rotation.set(0, 0, 0);
     }
   }
 }
@@ -265,10 +285,8 @@ export class FirstPersonController {
   }
 
   resolveWorldBounds(next) {
-    // The terrain is a ±52 m square; keep the player on it with a small margin
-    // so the whole location is walkable, corners included.
-    next.x = THREE.MathUtils.clamp(next.x, -CONFIG.WORLD.BOUNDS, CONFIG.WORLD.BOUNDS);
-    next.z = THREE.MathUtils.clamp(next.z, -CONFIG.WORLD.BOUNDS, CONFIG.WORLD.BOUNDS);
+    next.x = THREE.MathUtils.clamp(next.x, -CONFIG.WORLD.HALF_SIZE, CONFIG.WORLD.HALF_SIZE);
+    next.z = THREE.MathUtils.clamp(next.z, -CONFIG.WORLD.HALF_SIZE, CONFIG.WORLD.HALF_SIZE);
   }
 
   resolveStream(next) {
@@ -282,13 +300,17 @@ export class FirstPersonController {
 
   resolveColliders(next) {
     for (const collider of this.colliders) {
-      const dx = next.x - collider.position.x;
-      const dz = next.z - collider.position.z;
-      const minimum = collider.radius + CONFIG.PLAYER.RADIUS;
-      const length = Math.hypot(dx, dz);
-      if (length > 0 && length < minimum) {
-        next.x = collider.position.x + dx / length * minimum;
-        next.z = collider.position.z + dz / length * minimum;
+      if (collider.enabled === false || (collider.ref && collider.ref.state !== "standing")) continue;
+      if (collider.halfExtents) {
+        sweepAabb(
+          this.position, next, collider.position,
+          collider.halfExtents.x + CONFIG.PLAYER.RADIUS,
+          collider.halfExtents.y + CONFIG.PLAYER.RADIUS,
+          next,
+        );
+      } else {
+        const minimum = collider.radius + CONFIG.PLAYER.RADIUS;
+        sweepCircle(this.position, next, collider.position, minimum, next);
       }
     }
   }

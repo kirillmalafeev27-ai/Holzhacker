@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { CONFIG } from "./config.js";
+import { adjustedCatapultPosition, catapultPositionPool } from "./world-layout.js";
 
 
 export class GoblinSystem {
@@ -151,23 +152,7 @@ export class GoblinSystem {
 
 
 export class CatapultSystem {
-  // How far each catapult is pulled toward the fort from its authored marker.
-  // Spawn A sits just west of the stream, so it is pulled less to stay out of
-  // the water trench.
-  static PULL = { CatapultSpawn_A: .9, CatapultSpawn_B: .8, CatapultSpawn_C: .8 };
-
-  static plannedPositions(assets) {
-    const markers = ["CatapultSpawn_A", "CatapultSpawn_B", "CatapultSpawn_C"];
-    return markers.slice(0, CONFIG.CATAPULTS.COUNT).map((name, index) => {
-      const position = assets.markerPosition(name) || new THREE.Vector3(25, 0, index * 5);
-      const pull = CatapultSystem.PULL[name] ?? .85;
-      position.x *= pull;
-      position.z *= pull;
-      return position;
-    });
-  }
-
-  constructor(scene, assets, projectiles, fort, player, notes, effects, audio, groundHeight = null) {
+  constructor(scene, assets, projectiles, fort, player, notes, effects, audio) {
     this.scene = scene;
     this.assets = assets;
     this.projectiles = projectiles;
@@ -176,19 +161,24 @@ export class CatapultSystem {
     this.notes = notes;
     this.effects = effects;
     this.audio = audio;
-    this.groundHeight = groundHeight;
     this.catapults = [];
     this.active = false;
+    this.notesRemainingToDrop = CONFIG.NOTES.TOTAL;
+    this.nextPositionIndex = CONFIG.CATAPULTS.COUNT;
     this.onDestroyed = () => {};
+    this.onReinforced = () => {};
     this.spawnModels();
   }
 
   spawnModels() {
-    const positions = CatapultSystem.plannedPositions(this.assets);
-    for (let index = 0; index < positions.length; index += 1) {
-      const position = positions[index];
-      const ground = this.groundHeight?.(position.x, position.z);
-      if (ground !== null && ground !== undefined) position.y = ground;
+    const markers = ["CatapultSpawn_A", "CatapultSpawn_B", "CatapultSpawn_C"];
+    const initialPositions = markers.map((name, index) => {
+      const marker = this.assets.markerPosition(name) || new THREE.Vector3(25, 0, index * 5);
+      return this.groundPosition(adjustedCatapultPosition(marker));
+    });
+    this.positionPool = catapultPositionPool(initialPositions).map((position) => this.groundPosition(position));
+    for (let index = 0; index < CONFIG.CATAPULTS.COUNT; index += 1) {
+      const position = this.positionPool[index].clone();
       const intact = this.assets.clone("catapult");
       const destroyed = this.assets.clone("catapultDestroyed");
       intact.position.copy(position);
@@ -200,15 +190,100 @@ export class CatapultSystem {
       let arm = null;
       intact.traverse((object) => { if (object.userData?.animatedPart === "throwingArm" || /ThrowingArm/.test(object.name)) arm = object; });
       this.catapults.push({
-        id: index, intact, destroyed, arm, position: position.clone(),
+        id: index, intact, destroyed, arm, position: position.clone(), anchor: position.clone(),
+        travelDirection: position.clone().setY(0).normalize().multiplyScalar(-1),
+        patrolTime: 0, patrolPhase: index % 2 === 0 ? 0 : Math.PI,
+        patrolRate: 1 + (index - 1) * .08,
         health: CONFIG.CATAPULTS.HITS_TO_DESTROY, state: "idle", timer: 1.8 + index * 1.6,
-        destroyedState: false, recoil: 0, smokeTimer: 0,
+        destroyedState: false, recoil: 0, smokeTimer: 0, respawnTimer: 0,
+        arrivalProgress: 0, arrivalStart: position.clone(), generation: 0,
       });
     }
   }
 
+  groundPosition(position) {
+    const grounded = position.clone();
+    const ground = this.player.groundHeight?.(grounded.x, grounded.z);
+    if (ground !== null && ground !== undefined) grounded.y = ground;
+    return grounded;
+  }
+
   activate() {
     this.active = true;
+  }
+
+  collisionData() {
+    return this.catapults.map((catapult) => ({
+      kind: "catapult",
+      position: catapult.position,
+      radius: CONFIG.CATAPULTS.COLLISION_RADIUS,
+    }));
+  }
+
+  updatePatrol(catapult, dt) {
+    catapult.patrolTime += dt;
+    const offset = Math.sin(
+      catapult.patrolTime * CONFIG.CATAPULTS.PATROL_ANGULAR_SPEED * catapult.patrolRate + catapult.patrolPhase,
+    ) * CONFIG.CATAPULTS.PATROL_DISTANCE;
+    catapult.position.copy(catapult.anchor).addScaledVector(catapult.travelDirection, offset);
+    catapult.intact.position.copy(catapult.position);
+    catapult.destroyed.position.copy(catapult.position);
+  }
+
+  nextReinforcementAnchor(catapult) {
+    for (let attempt = 0; attempt < this.positionPool.length * 2; attempt += 1) {
+      const candidate = this.positionPool[this.nextPositionIndex % this.positionPool.length].clone();
+      this.nextPositionIndex += 1;
+      if (candidate.distanceTo(catapult.anchor) < 1) continue;
+      const occupied = this.catapults.some((other) => other !== catapult && candidate.distanceTo(other.anchor) < 5);
+      if (!occupied) return this.groundPosition(candidate);
+    }
+    const angle = Math.atan2(catapult.anchor.z, catapult.anchor.x) + CONFIG.CATAPULTS.REINFORCEMENT_ANGLE_OFFSET;
+    const radius = Math.hypot(catapult.anchor.x, catapult.anchor.z) + CONFIG.CATAPULTS.REINFORCEMENT_RADIAL_OFFSET;
+    return this.groundPosition(new THREE.Vector3(Math.cos(angle) * radius, catapult.anchor.y, Math.sin(angle) * radius));
+  }
+
+  startReinforcement(catapult) {
+    const nextAnchor = this.nextReinforcementAnchor(catapult);
+    catapult.anchor.copy(nextAnchor);
+    catapult.travelDirection.copy(nextAnchor).setY(0).normalize().multiplyScalar(-1);
+    catapult.arrivalStart.copy(nextAnchor).addScaledVector(
+      catapult.travelDirection,
+      -CONFIG.CATAPULTS.REINFORCEMENT_ARRIVAL_DISTANCE,
+    );
+    catapult.position.copy(catapult.arrivalStart);
+    catapult.arrivalProgress = 0;
+    catapult.patrolTime = 0;
+    catapult.patrolPhase = catapult.id % 2 === 0 ? 0 : Math.PI;
+    catapult.health = CONFIG.CATAPULTS.HITS_TO_DESTROY;
+    catapult.state = "reinforcing";
+    catapult.destroyedState = false;
+    catapult.generation += 1;
+    catapult.recoil = 0;
+    catapult.timer = 2.2 + catapult.id * .7;
+    const facing = Math.atan2(-nextAnchor.x, -nextAnchor.z);
+    catapult.intact.rotation.y = facing;
+    catapult.destroyed.rotation.y = facing;
+    catapult.intact.position.copy(catapult.position);
+    catapult.destroyed.position.copy(catapult.position);
+    catapult.intact.visible = true;
+    catapult.destroyed.visible = false;
+    if (catapult.arm) catapult.arm.rotation.x = 0;
+  }
+
+  updateReinforcement(catapult, dt) {
+    catapult.arrivalProgress = Math.min(
+      1,
+      catapult.arrivalProgress + dt / CONFIG.CATAPULTS.REINFORCEMENT_ARRIVAL_DURATION,
+    );
+    const t = catapult.arrivalProgress;
+    const eased = t * t * (3 - 2 * t);
+    catapult.position.lerpVectors(catapult.arrivalStart, catapult.anchor, eased);
+    catapult.intact.position.copy(catapult.position);
+    catapult.destroyed.position.copy(catapult.position);
+    if (t < 1) return;
+    catapult.state = "idle";
+    this.onReinforced(catapult.id, catapult.generation, catapult.anchor.clone());
   }
 
   update(dt) {
@@ -216,12 +291,21 @@ export class CatapultSystem {
       if (catapult.destroyedState) {
         catapult.smokeTimer -= dt;
         if (catapult.smokeTimer <= 0) {
-          catapult.smokeTimer = .38;
-          this.effects.smoke(catapult.position.clone().add(new THREE.Vector3(0, 1.2, 0)));
+          catapult.smokeTimer = .16;
+          this.effects.smoke(catapult.position.clone().add(new THREE.Vector3(0, 1.2, 0)), 7);
+        }
+        if (this.active) {
+          catapult.respawnTimer -= dt;
+          if (catapult.respawnTimer <= 0) this.startReinforcement(catapult);
         }
         continue;
       }
+      if (catapult.state === "reinforcing") {
+        this.updateReinforcement(catapult, dt);
+        continue;
+      }
       if (!this.active) continue;
+      this.updatePatrol(catapult, dt);
       catapult.timer -= dt;
       if (catapult.state === "idle" && catapult.timer <= .85) catapult.state = "prepare";
       if (catapult.state === "prepare" && catapult.arm) catapult.arm.rotation.x = THREE.MathUtils.damp(catapult.arm.rotation.x, .42, 4.5, dt);
@@ -240,15 +324,18 @@ export class CatapultSystem {
     this.audio.play("catapult");
     const playerOutside = Math.hypot(this.player.position.x, this.player.position.z) > CONFIG.BUILD.FORT_RADIUS + 1;
     const aimPlayer = playerOutside && Math.random() < .52;
+    const wallAngle = Math.random() * Math.PI * 2;
+    const wallRadius = (CONFIG.BUILD.WALL_INNER_RADIUS + CONFIG.BUILD.WALL_OUTER_RADIUS) * .5 + (Math.random() - .5) * .45;
     const target = aimPlayer
       ? this.player.position.clone().add(new THREE.Vector3(this.player.velocity.x * .35, -CONFIG.PLAYER.EYE_HEIGHT + .1, this.player.velocity.z * .35))
-      : new THREE.Vector3((Math.random() - .5) * 11, .1, (Math.random() - .5) * 11);
+      : new THREE.Vector3(Math.cos(wallAngle) * wallRadius, .85 + Math.random() * 1.8, Math.sin(wallAngle) * wallRadius);
     const start = catapult.position.clone().add(new THREE.Vector3(0, 3.2, 0));
     this.projectiles.launch({
       kind: aimPlayer ? "enemy-player" : "enemy-base",
       start, target, scale: 1.35, warning: true,
       onImpact: (position, kind) => {
-        this.effects.groundImpact(position);
+        if (kind === "enemy-player") this.effects.dirtImpact(position);
+        else this.effects.fortImpact(position);
         this.audio.play("impact");
         if (kind === "enemy-player") {
           if (this.player.position.distanceTo(position.clone().add(new THREE.Vector3(0, CONFIG.PLAYER.EYE_HEIGHT, 0))) < 1.8) this.player.damage(1);
@@ -263,19 +350,27 @@ export class CatapultSystem {
     const catapult = this.catapults[index];
     if (!catapult || catapult.destroyedState) return false;
     catapult.health -= 1;
-    this.effects.groundImpact(catapult.position.clone().add(new THREE.Vector3(0, .6, 0)));
+    this.effects.catapultImpact(catapult.position.clone().add(new THREE.Vector3(0, .75, 0)));
     if (catapult.health <= 0) this.destroy(catapult);
     return true;
   }
 
   destroy(catapult) {
+    if (catapult.destroyedState) return false;
     catapult.destroyedState = true;
     catapult.intact.visible = false;
     catapult.destroyed.visible = true;
     catapult.smokeTimer = 0;
+    catapult.respawnTimer = CONFIG.CATAPULTS.REINFORCEMENT_DELAY
+      + catapult.id * CONFIG.CATAPULTS.REINFORCEMENT_STAGGER;
     this.effects.constructionBurst(catapult.position.clone(), 30);
-    this.notes.drop(catapult.position, 2);
-    this.onDestroyed(catapult.id);
+    const notesDropped = Math.min(CONFIG.CATAPULTS.NOTES_PER_DESTRUCTION, this.notesRemainingToDrop);
+    if (notesDropped > 0) {
+      this.notes.drop(catapult.position, notesDropped);
+      this.notesRemainingToDrop -= notesDropped;
+    }
+    this.onDestroyed(catapult.id, notesDropped, catapult.respawnTimer);
+    return true;
   }
 
   stop() {

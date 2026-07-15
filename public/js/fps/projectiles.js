@@ -21,7 +21,11 @@ export class ProjectileSystem {
       marker.rotation.x = -Math.PI / 2;
       marker.visible = false;
       scene.add(marker);
-      this.pool.push({ object, marker, velocity: new THREE.Vector3(), target: new THREE.Vector3(), age: 0, duration: 0, kind: "", mode: "target", onMove: null, onImpact: null });
+      this.pool.push({
+        object, marker, velocity: new THREE.Vector3(), target: new THREE.Vector3(),
+        age: 0, duration: 0, kind: "", onImpact: null, shouldImpact: null,
+        ballistic: false, groundHeight: -Infinity,
+      });
     }
   }
 
@@ -30,8 +34,6 @@ export class ProjectileSystem {
     if (!projectile) return null;
     const duration = flightTime || THREE.MathUtils.clamp(start.distanceTo(target) / 11.5, 1.35, 3.35);
     projectile.kind = kind;
-    projectile.mode = "target";
-    projectile.onMove = null;
     projectile.object.visible = true;
     projectile.object.position.copy(start);
     projectile.object.scale.setScalar(scale);
@@ -39,6 +41,9 @@ export class ProjectileSystem {
     projectile.age = 0;
     projectile.duration = duration;
     projectile.onImpact = onImpact;
+    projectile.shouldImpact = null;
+    projectile.ballistic = false;
+    projectile.groundHeight = -Infinity;
     projectile.velocity.copy(target).sub(start).divideScalar(duration);
     projectile.velocity.y = (target.y - start.y + .5 * CONFIG.CATAPULTS.GRAVITY * duration * duration) / duration;
     projectile.marker.visible = warning;
@@ -47,22 +52,21 @@ export class ProjectileSystem {
     return projectile;
   }
 
-  // Free-flight stone: follows the launch velocity under gravity until onMove
-  // reports a hit (or maxAge runs out). Used for the crosshair-aimed throws.
-  launchBallistic({ kind, start, velocity, scale=1, maxAge=10, onMove, onImpact }) {
+  launchVelocity({ kind, start, velocity, maxTime=5, scale=1, groundHeight=0, shouldImpact, onImpact }) {
     const projectile = this.pool.find((item) => !item.object.visible);
     if (!projectile) return null;
     projectile.kind = kind;
-    projectile.mode = "ballistic";
     projectile.object.visible = true;
     projectile.object.position.copy(start);
     projectile.object.scale.setScalar(scale);
-    projectile.age = 0;
-    projectile.duration = maxAge;
-    projectile.onMove = onMove || null;
-    projectile.onImpact = onImpact;
-    projectile.velocity.copy(velocity);
     projectile.marker.visible = false;
+    projectile.velocity.copy(velocity);
+    projectile.age = 0;
+    projectile.duration = maxTime;
+    projectile.onImpact = onImpact;
+    projectile.shouldImpact = shouldImpact || null;
+    projectile.ballistic = true;
+    projectile.groundHeight = groundHeight;
     this.active.push(projectile);
     return projectile;
   }
@@ -77,15 +81,17 @@ export class ProjectileSystem {
       projectile.object.rotation.z += dt * 4.2;
       const pulse = .92 + Math.sin(projectile.age * 10) * .12;
       projectile.marker.scale.setScalar(pulse);
-      const landed = projectile.mode === "ballistic"
-        ? Boolean(projectile.onMove?.(projectile.object.position)) || projectile.age >= projectile.duration
-        : projectile.age >= projectile.duration;
-      if (!landed) continue;
-      const impact = projectile.mode === "ballistic" ? projectile.object.position.clone() : projectile.target.clone();
+      const contact = projectile.ballistic ? projectile.shouldImpact?.(projectile.object.position, projectile) : null;
+      const reachedTarget = !projectile.ballistic && projectile.age >= projectile.duration;
+      const reachedGround = projectile.ballistic && projectile.age > .18 && projectile.object.position.y <= projectile.groundHeight;
+      const timedOut = projectile.ballistic && projectile.age >= projectile.duration;
+      if (!contact && !reachedTarget && !reachedGround && !timedOut) continue;
+      const impact = projectile.ballistic ? projectile.object.position.clone() : projectile.target.clone();
       projectile.object.position.copy(impact);
-      projectile.onImpact?.(impact, projectile.kind);
+      projectile.onImpact?.(impact, projectile.kind, contact || null);
       projectile.object.visible = false;
       projectile.marker.visible = false;
+      projectile.shouldImpact = null;
       this.active.splice(index, 1);
     }
   }

@@ -3,39 +3,12 @@ import { CONFIG } from "./config.js";
 
 
 const STAGES = ["tree0", "tree25", "tree50", "tree75", "tree90", "treeFallen"];
-
-// The authored fall from tree_chop_simulation.blend (24 fps, frames 102-144):
-// the crown hinges on the rear wood at Blender (-0.23, -0.27, 1.27) and tips
-// away from the notch, hits the ground at 88 deg, bounces to 84 and settles
-// at 87. Times are seconds since the fourth axe impact.
-const FALL_TIMES = [0, .333, .5, .833, 1.25, 1.417, 1.625, 1.75];
-const FALL_ANGLES = [0, 0, 4, 27, 61, 88, 84, 87].map((deg) => deg * Math.PI / 180);
-const FALL_HINGE = new THREE.Vector3(-.23, 1.27, .27);
-const FALL_FINAL_ANGLE = FALL_ANGLES[FALL_ANGLES.length - 1];
-const FALL_SWAP_TIME = FALL_TIMES[1];
-const FALL_IMPACT_TIME = 1.417;
-
-// Piecewise cubic Hermite with Catmull-Rom tangents — matches the Blender
-// bezier interpolation closely enough to keep the authored motion.
-function sampleFallAngle(time) {
-  const last = FALL_TIMES.length - 1;
-  if (time <= FALL_TIMES[0]) return FALL_ANGLES[0];
-  if (time >= FALL_TIMES[last]) return FALL_ANGLES[last];
-  let index = 0;
-  while (time > FALL_TIMES[index + 1]) index += 1;
-  const t0 = FALL_TIMES[index], t1 = FALL_TIMES[index + 1];
-  const p0 = FALL_ANGLES[index], p1 = FALL_ANGLES[index + 1];
-  const dt = t1 - t0;
-  const prevT = index > 0 ? FALL_TIMES[index - 1] : t0 - dt;
-  const prevP = index > 0 ? FALL_ANGLES[index - 1] : p0;
-  const nextT = index + 2 <= last ? FALL_TIMES[index + 2] : t1 + dt;
-  const nextP = index + 2 <= last ? FALL_ANGLES[index + 2] : p1;
-  const m0 = (p1 - prevP) / (t1 - prevT) * dt;
-  const m1 = (nextP - p0) / (nextT - t0) * dt;
-  const s = (time - t0) / dt;
-  const s2 = s * s, s3 = s2 * s;
-  return (2 * s3 - 3 * s2 + 1) * p0 + (s3 - 2 * s2 + s) * m0 + (-2 * s3 + 3 * s2) * p1 + (s3 - s2) * m1;
-}
+const AUTHORED_FALL_KEYS = [
+  [0, 0], [4 / 34, 4], [12 / 34, 27], [22 / 34, 61],
+  [26 / 34, 88], [31 / 34, 84], [1, 87],
+];
+const FALL_HINGE = new THREE.Vector3(-.23, 1.27, 0);
+const FALL_AXIS = new THREE.Vector3(0, 0, 1);
 
 
 export class ChoppingSystem {
@@ -67,33 +40,14 @@ export class ChoppingSystem {
       models[0].visible = true;
       root.userData.choppable = true;
       this.scene.add(root);
-      const fallenCrown = models[5].getObjectByName("TreeCrownFallen") || null;
       this.trees.push({
-        id: index, root, models, hits: 0, state: "standing",
-        fallTime: 0, lyingTime: 0, log: null,
-        fallenCrown,
-        fallPivot: fallenCrown ? this.buildFallHinge(models[5], fallenCrown) : null,
-        crownSwapped: false, impactPlayed: false,
+        id: index, root, models, hits: 0, state: "standing", fallTime: 0,
+        fallenTime: 0, log: null, chopYaw: null,
+        correctAnswers: 0, hitCredits: 0,
+        fallenCrown: models[5].getObjectByName("TreeCrownFallen"),
+        fallenStump: models[5].getObjectByName("TreeStump"),
       });
     }
-  }
-
-  // Re-hang the exported (settled) crown on the authored rear-wood hinge so
-  // the original Blender fall animation can be replayed: at angle 0 the crown
-  // stands exactly on the stump, at FALL_FINAL_ANGLE it matches the export.
-  buildFallHinge(fallenModel, crown) {
-    const pivot = new THREE.Group();
-    pivot.name = "FallHinge";
-    pivot.position.copy(FALL_HINGE);
-    const settled = new THREE.Matrix4()
-      .makeTranslation(FALL_HINGE.x, FALL_HINGE.y, FALL_HINGE.z)
-      .multiply(new THREE.Matrix4().makeRotationZ(FALL_FINAL_ANGLE));
-    crown.updateMatrix();
-    crown.applyMatrix4(settled.invert());
-    fallenModel.add(pivot);
-    pivot.add(crown);
-    pivot.rotation.z = FALL_FINAL_ANGLE;
-    return pivot;
   }
 
   collisionData() {
@@ -101,6 +55,7 @@ export class ChoppingSystem {
       position: tree.root.position,
       radius: .78,
       kind: "choppableTree",
+      ref: tree,
     }));
   }
 
@@ -126,41 +81,71 @@ export class ChoppingSystem {
   }
 
   chop(tree) {
-    if (tree.state !== "standing" || this.player.carrying) return false;
-    return this.player.rig.startSwing(() => this.applyHit(tree));
+    if (tree.state !== "standing" || this.player.carrying || tree.hitCredits <= 0) return false;
+    this.activeTree = tree;
+    this.orientCut(tree);
+    const started = this.player.rig.startSwing(() => this.applyHit(tree));
+    if (started) tree.hitCredits = Math.max(0, tree.hitCredits - 1);
+    return started;
+  }
+
+  orientCut(tree) {
+    if (tree.chopYaw !== null) return;
+    const towardPlayer = this.player.position.clone().sub(tree.root.position).setY(0);
+    if (towardPlayer.lengthSq() < 1e-6) towardPlayer.set(1, 0, 0);
+    towardPlayer.normalize();
+    tree.chopYaw = Math.atan2(-towardPlayer.z, towardPlayer.x);
+    tree.root.rotation.y = tree.chopYaw;
+  }
+
+  nextQuizHitGrant(tree) {
+    if (!tree || tree.state !== "standing") return 0;
+    if (tree.hitCredits > 0 || tree.correctAnswers >= 2) return 0;
+    const remaining = Math.max(0, CONFIG.CHOP.HITS - tree.hits);
+    return tree.correctAnswers === 0
+      ? Math.min(CONFIG.CHOP.FIRST_ANSWER_HITS, remaining)
+      : remaining;
+  }
+
+  grantQuizHits(tree) {
+    if (!tree || tree.state !== "standing") return 0;
+    const hits = this.nextQuizHitGrant(tree);
+    if (!hits) return 0;
+    tree.correctAnswers += 1;
+    tree.hitCredits += hits;
+    this.activeTree = tree;
+    return hits;
+  }
+
+  progress(tree = this.activeTree) {
+    if (!tree || tree.state !== "standing" || (!tree.correctAnswers && !tree.hits && !tree.hitCredits)) return null;
+    return {
+      tree,
+      state: tree.state,
+      hits: tree.hits,
+      hitCredits: tree.hitCredits,
+      remainingHits: Math.max(0, CONFIG.CHOP.HITS - tree.hits),
+      ratio: tree.hits / CONFIG.CHOP.HITS,
+      nextGrant: this.nextQuizHitGrant(tree),
+    };
   }
 
   applyHit(tree) {
     if (tree.state !== "standing") return;
     this.audio.play("axe");
+    this.orientCut(tree);
     tree.hits += 1;
-    // The notch is authored on the model's local +X side: turn the trunk so
-    // the cut always opens toward the side the player is chopping from.
-    this.faceNotchToPlayer(tree);
-    const notchDirection = new THREE.Vector3(Math.cos(tree.root.rotation.y), 0, -Math.sin(tree.root.rotation.y));
-    const impact = tree.root.position.clone().addScaledVector(notchDirection, .55).add(new THREE.Vector3(0, 1.05, 0));
+    const cutSide = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), tree.root.rotation.y);
+    const impact = tree.root.position.clone().addScaledVector(cutSide, .33).add(new THREE.Vector3(0, 1.05, 0));
     this.effects.woodBurst(impact);
     this.showStage(tree, Math.min(tree.hits, 4));
     if (tree.hits >= CONFIG.CHOP.HITS) {
       tree.state = "falling";
       tree.fallTime = 0;
-      tree.crownSwapped = false;
-      tree.impactPlayed = false;
+      if (this.activeTree === tree) this.activeTree = null;
+      this.showStage(tree, 5);
+      this.setFallAngle(tree, 0);
     }
-  }
-
-  faceNotchToPlayer(tree) {
-    const playerPosition = this.player?.position;
-    if (!playerPosition) return;
-    const dx = playerPosition.x - tree.root.position.x;
-    const dz = playerPosition.z - tree.root.position.z;
-    if (Math.hypot(dx, dz) < .001) return;
-    tree.root.rotation.y = Math.atan2(-dz, dx);
-  }
-
-  fallDirection(tree, target = new THREE.Vector3()) {
-    // Local -X (opposite the notch, i.e. away from the player) in world space.
-    return target.set(-Math.cos(tree.root.rotation.y), 0, Math.sin(tree.root.rotation.y));
   }
 
   showStage(tree, stageIndex) {
@@ -171,30 +156,17 @@ export class ChoppingSystem {
     for (const tree of this.trees) {
       if (tree.state === "falling") {
         tree.fallTime += dt;
-        // Replay the authored Blender fall: swap the stage-90 trunk for the
-        // hinged stump+crown, then drive the hinge along the keyframed curve
-        // (ground hit at 88 deg, bounce, settle at 87 deg).
-        if (tree.fallPivot) {
-          if (!tree.crownSwapped && tree.fallTime >= FALL_SWAP_TIME) {
-            tree.crownSwapped = true;
-            tree.fallPivot.rotation.z = 0;
-            this.showStage(tree, 5);
-          }
-          if (tree.crownSwapped) tree.fallPivot.rotation.z = sampleFallAngle(tree.fallTime);
-        }
-        if (!tree.impactPlayed && tree.fallTime >= FALL_IMPACT_TIME) {
-          tree.impactPlayed = true;
-          this.effects.groundImpact(tree.root.position.clone().addScaledVector(this.fallDirection(tree), 3.1));
-          this.audio.play("impact");
-        }
-        if (tree.fallTime < CONFIG.CHOP.FALL_DURATION) continue;
-        if (tree.fallPivot) tree.fallPivot.rotation.z = FALL_FINAL_ANGLE;
-        this.showStage(tree, 5);
+        const t = Math.min(1, tree.fallTime / CONFIG.CHOP.FALL_DURATION);
+        this.setFallAngle(tree, this.authoredFallDegrees(t));
+        if (t < 1) continue;
         tree.state = "fallen";
-        tree.lyingTime = 0;
+        tree.fallenTime = 0;
+        const away = this.fallDirection(tree);
+        this.effects.groundImpact(tree.root.position.clone().addScaledVector(away, 2.8));
+        this.audio.play("impact");
       } else if (tree.state === "fallen") {
-        tree.lyingTime += dt;
-        if (tree.lyingTime < CONFIG.CHOP.TRUNK_LINGER_SECONDS) continue;
+        tree.fallenTime += dt;
+        if (tree.fallenTime < CONFIG.CHOP.TRUNK_LINGER_SECONDS) continue;
         if (tree.fallenCrown) tree.fallenCrown.visible = false;
         tree.state = "cleared";
         this.spawnLog(tree);
@@ -202,15 +174,43 @@ export class ChoppingSystem {
     }
   }
 
+  authoredFallDegrees(t) {
+    for (let index = 1; index < AUTHORED_FALL_KEYS.length; index += 1) {
+      const [endT, endValue] = AUTHORED_FALL_KEYS[index];
+      const [startT, startValue] = AUTHORED_FALL_KEYS[index - 1];
+      if (t > endT) continue;
+      const local = THREE.MathUtils.clamp((t - startT) / (endT - startT), 0, 1);
+      const bezier = local * local * (3 - 2 * local);
+      return THREE.MathUtils.lerp(startValue, endValue, bezier);
+    }
+    return AUTHORED_FALL_KEYS.at(-1)[1];
+  }
+
+  setFallAngle(tree, degrees) {
+    if (!tree.fallenCrown) return;
+    const angle = THREE.MathUtils.degToRad(degrees);
+    tree.fallenCrown.rotation.set(0, 0, angle);
+    const rotatedHinge = FALL_HINGE.clone().applyAxisAngle(FALL_AXIS, angle);
+    tree.fallenCrown.position.copy(FALL_HINGE).sub(rotatedHinge);
+  }
+
+  fallDirection(tree) {
+    return new THREE.Vector3(-1, 0, 0)
+      .applyAxisAngle(new THREE.Vector3(0, 1, 0), tree.root.rotation.y)
+      .normalize();
+  }
+
   spawnLog(tree) {
-    const direction = this.fallDirection(tree);
     const object = this.assets.clone("log");
-    object.position.copy(tree.root.position).addScaledVector(direction, CONFIG.CHOP.LOG_DISTANCE).add(new THREE.Vector3(0, .09, 0));
-    // log_large is long along its local X axis; lay it along the fallen trunk.
-    object.rotation.y = Math.atan2(-direction.z, direction.x);
-    object.scale.set(3.3, 1.7, 1.7);
+    object.position.copy(tree.root.position)
+      .addScaledVector(this.fallDirection(tree), CONFIG.CHOP.LOG_DISTANCE)
+      .add(new THREE.Vector3(0, .28, 0));
+    object.rotation.y = tree.root.rotation.y;
+    // log_large.glb is authored as a 1 m long cylinder. Stretch only its
+    // longitudinal X axis: half of LOG_LENGTH equals LOG_DISTANCE, so the
+    // near end begins at the stump instead of leaving a visible gap.
+    object.scale.set(CONFIG.CHOP.LOG_LENGTH, CONFIG.CHOP.LOG_THICKNESS, CONFIG.CHOP.LOG_THICKNESS);
     this.scene.add(object);
-    this.effects.woodBurst(object.position.clone().add(new THREE.Vector3(0, .5, 0)));
     const log = { id: `tree-log-${tree.id}`, object, collected: false };
     tree.log = log;
     this.logs.push(log);

@@ -47,6 +47,9 @@ export class NoteSystem {
       this.collected += 1;
       this.audio.play("note");
       this.onCollected(this.collected);
+      // A collected fragment opens a pausing story panel. Stop this frame so
+      // overlapping notes cannot replace one another before being read.
+      break;
     }
   }
 }

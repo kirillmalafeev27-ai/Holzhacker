@@ -9,4 +9,9 @@ __pycache__/
 *.pyc
 npm-debug.log*
 
+# Runtime commits contain only Meshopt-compressed world variants.
+public/assets/forest_defense/first_person/first_person_world.glb
+public/assets/forest_defense/first_person/first_person_world_1k.glb
+public/assets/forest_defense/first_person/first_person_world_512.glb
+
 Textures/

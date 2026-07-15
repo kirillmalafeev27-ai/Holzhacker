@@ -6,11 +6,11 @@ export class UIManager {
     const byId = (id) => document.getElementById(id);
     this.elements = {
       loading: byId("loading"), loadingBar: byId("loading-bar"), loadingStatus: byId("loading-status"), loadingDetail: byId("loading-detail"),
-      startScreen: byId("start-screen"), startButton: byId("start-button"), hud: byId("hud"), pause: byId("pause-screen"),
+      startScreen: byId("boot"), startButton: byId("start"), performanceBadge: byId("performance-badge"), hud: byId("hud"), pause: byId("pause-screen"),
       healthText: byId("health-text"), healthBar: byId("health-bar"), baseText: byId("base-health-text"), baseBar: byId("base-health-bar"),
       phase: byId("phase-label"), timer: byId("attack-timer"), timerSubtitle: byId("attack-subtitle"),
       objectiveTitle: byId("objective-title"), objectiveText: byId("objective-text"), logs: byId("logs-count"), stage: byId("build-stage"), notes: byId("notes-count"),
-      prompt: byId("interaction-prompt"), promptText: byId("interaction-prompt")?.querySelector("span"), carry: byId("carry-indicator"), towerTargets: byId("tower-targets"),
+      prompt: byId("interaction-prompt"), promptText: byId("interaction-prompt")?.querySelector("span"), carry: byId("carry-indicator"), chopProgress: byId("chop-progress"), chopProgressText: byId("chop-progress")?.querySelector("span"), chopProgressBar: byId("chop-progress")?.querySelector("em"), towerTargets: byId("tower-targets"), leaveTower: byId("leave-tower-button"),
       warning: byId("warning"), toasts: byId("toast-stack"), damage: byId("damage-vignette"), dodge: byId("dodge-flash"),
       questionModal: byId("question-modal"), questionPrompt: byId("question-prompt"), questionOptions: byId("question-options"), questionFeedback: byId("question-feedback"),
       debugPanel: byId("debug-panel"), debugFps: byId("debug-fps"), debugStage: byId("debug-stage"), debugGate: byId("debug-gate"), debugAgents: byId("debug-agents"), debugPath: byId("debug-path"), debugState: byId("debug-state"),
@@ -25,7 +25,9 @@ export class UIManager {
     const labels = {
       world: "Детализированный лес", fort1: "Первая стадия крепости", fort2: "Вторая стадия крепости", fort3: "Готовая крепость",
       nav0: "Navmesh поляны", nav1: "Navmesh стадии 1", nav2: "Navmesh стадии 2", nav3Open: "Navmesh открытых ворот", nav3Closed: "Navmesh закрытых ворот",
-      goblin: "Гоблины", catapult: "Катапульты", arms: "Руки игрока", axe: "Существующий топор",
+      goblin: "Гоблины", catapult: "Катапульты",
+      viewAxe: "Модель хвата топора", viewStone: "Модель хвата камня", viewLog: "Модель хвата бревна",
+      axe: "Существующий топор",
     };
     if (labels[key]) this.elements.loadingDetail.textContent = labels[key];
   }
@@ -33,6 +35,12 @@ export class UIManager {
   loadingComplete() {
     this.elements.loading.classList.add("hidden");
     this.elements.startScreen.classList.remove("hidden");
+  }
+
+  setPerformanceProfile(profile, description) {
+    if (!this.elements.performanceBadge) return;
+    this.elements.performanceBadge.dataset.profile = profile.id;
+    this.elements.performanceBadge.querySelector("span").textContent = `${profile.label} · ${description}`;
   }
 
   startGame() {
@@ -78,8 +86,25 @@ export class UIManager {
     this.elements.carry.classList.toggle("hidden", !value);
   }
 
+  setChopProgress(progress = null) {
+    const visible = progress && progress.state === "standing";
+    this.elements.chopProgress.classList.toggle("hidden", !visible);
+    if (!visible) return;
+    const access = progress.hitCredits > 0
+      ? ` · доступно ударов ${progress.hitCredits}`
+      : progress.nextGrant > 0
+        ? ` · следующий вопрос откроет ${progress.nextGrant}`
+        : "";
+    this.elements.chopProgressText.textContent = `${progress.hits} / ${CONFIG.CHOP.HITS} ударов${access}`;
+    this.elements.chopProgressBar.style.width = `${Math.min(100, Math.max(0, progress.ratio * 100))}%`;
+  }
+
   setTowerTargets(value) {
     this.elements.towerTargets.classList.toggle("hidden", !value);
+  }
+
+  setLeaveTower(value) {
+    this.elements.leaveTower.classList.toggle("hidden", !value);
   }
 
   toast(text, duration=2600) {

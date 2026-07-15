@@ -102,7 +102,11 @@ function frameCatapult(game, index = 0, elevated = false) {
   if (!catapult) return;
   const target = catapult.position.clone().add(new THREE.Vector3(0, 1.5, 0));
   const inward = catapult.position.clone().setY(0).normalize().multiplyScalar(-1);
-  const camera = target.clone().addScaledVector(inward, 7).add(new THREE.Vector3(0, elevated ? 2.8 : .5, 0));
+  const tangent = new THREE.Vector3(-inward.z, 0, inward.x);
+  const camera = target.clone()
+    .addScaledVector(inward, elevated ? 7.2 : 6.2)
+    .addScaledVector(tangent, elevated ? 3.2 : 4.1)
+    .add(new THREE.Vector3(0, elevated ? 2.8 : .75, 0));
   place(game, camera.x, camera.z, target, camera.y);
 }
 
@@ -121,7 +125,7 @@ export function applyDevPreset(game, preset) {
     case "falling": {
       const tree = showTreeStage(game, 5);
       if (!tree) break;
-      if (tree.fallPivot) tree.fallPivot.rotation.z = THREE.MathUtils.degToRad(55);
+      game.chopping.setFallAngle(tree, 55);
       const target = tree.root.position.clone().add(new THREE.Vector3(0, 1.2, 0));
       place(game, target.x + 4.2, target.z + 3.4, target);
       break;
@@ -178,7 +182,7 @@ export function applyDevPreset(game, preset) {
     case "catapult":
       instantFort(game, 3, false);
       game.activateAttack();
-      game.catapults.catapults[0].timer = .3;
+      game.catapults.catapults[0].timer = 999;
       frameCatapult(game, 0);
       break;
     case "apex":
@@ -230,6 +234,9 @@ export function applyDevPreset(game, preset) {
       for (const catapult of game.catapults.catapults) {
         if (!catapult.destroyedState) game.catapults.destroy(catapult);
       }
+      if (game.notes.notes.length < CONFIG.NOTES.TOTAL) {
+        game.notes.drop(game.player.position, CONFIG.NOTES.TOTAL - game.notes.notes.length);
+      }
       for (const note of game.notes.notes) {
         note.object.position.copy(game.player.position).add(new THREE.Vector3(0, -CONFIG.PLAYER.EYE_HEIGHT + .24, 0));
         note.baseY = note.object.position.y;
@@ -263,7 +270,6 @@ export class DevDemoDirector {
       [6.7, () => game.chopping.applyHit(game.chopping.trees[0])],
       [8.05, () => game.chopping.applyHit(game.chopping.trees[0])],
       [10.1, () => {
-        // Skip the trunk linger delay so the scripted demo keeps its pacing.
         game.chopping.update(CONFIG.CHOP.TRUNK_LINGER_SECONDS + .05);
         const log = game.chopping.trees[0]?.log;
         if (log) game.chopping.pickup(log);
@@ -301,7 +307,7 @@ export class DevDemoDirector {
       [34.55, () => {
         game.tower.stoneReady = true;
         game.player.setStoneMode(true);
-        game.tower.throwAt(0);
+        game.tower.throwAt(1);
       }],
       [37.0, () => applyDevPreset(game, "destroyed")],
       [38.25, () => applyDevPreset(game, "note")],

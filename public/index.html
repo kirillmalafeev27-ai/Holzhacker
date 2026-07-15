@@ -30,12 +30,36 @@
       <p id="loading-detail" class="loading-detail">Террейн · природа · навигация</p>
     </section>
 
-    <section id="start-screen" class="screen-layer start-screen hidden">
+    <section id="boot" class="screen-layer start-screen hidden">
       <div class="start-card">
         <p class="eyebrow">SURVIVAL DEFENSE · FIRST PERSON</p>
         <h1>Защитите Waldwacht</h1>
         <p>Рубите деревья, постройте частокол и отбейте нападение до падения крепости.</p>
-        <button id="start-button" type="button">ВОЙТИ В ЛЕС</button>
+        <div id="performance-badge" class="performance-badge" data-profile="detecting">
+          <b>ПРОИЗВОДИТЕЛЬНОСТЬ</b><span>Определяем возможности компьютера…</span>
+        </div>
+        <div class="wald-learning-options">
+          <section class="wald-learning-block">
+            <div class="control-label">Режим теста</div>
+            <div class="segmented wald-mode-row">
+              <button type="button" data-quiz-mode="recognition">
+                <b>Узнавание</b><span>Выбор ответа — как в See Escape</span>
+              </button>
+              <button type="button" data-quiz-mode="recall">
+                <b>Воспроизведение</b><span>Свободный ввод и проверка ИИ</span>
+              </button>
+            </div>
+          </section>
+          <section class="wald-learning-block">
+            <div class="control-label">История из записок</div>
+            <div class="segmented wald-story-row">
+              <button type="button" data-story-index="0"><b>История 1</b><span data-story-title="0">Die Kartoffel-Lüge</span></button>
+              <button type="button" data-story-index="1"><b>История 2</b><span data-story-title="1">Heute du, morgen ich</span></button>
+              <button type="button" data-story-index="2"><b>История 3</b><span data-story-title="2">Überleben</span></button>
+            </div>
+          </section>
+        </div>
+        <button id="start" type="button">ВОЙТИ В ЛЕС</button>
         <div class="control-grid">
           <span><kbd>WASD</kbd> движение</span>
           <span><kbd>мышь</kbd> обзор</span>
@@ -76,10 +100,17 @@
         </div>
       </div>
 
+      <div id="chop-goal-card" class="chop-goal-card glass-panel" aria-label="Подсказка о рубимых деревьях">
+        <img src="/assets/forest_defense/sprites/tree_stage_0.png" alt="Дерево, которое можно рубить">
+        <p><b>Цель:</b> рубить вот эти деревья и собирать крепость.</p>
+      </div>
+
       <div id="crosshair" class="crosshair" aria-hidden="true"><i></i><i></i><i></i><i></i><b></b></div>
       <div id="interaction-prompt" class="interaction-prompt hidden"><kbd>E</kbd><span></span></div>
       <div id="carry-indicator" class="carry-indicator hidden">ТЯЖЁЛОЕ БРЕВНО · СКОРОСТЬ СНИЖЕНА</div>
-      <div id="tower-targets" class="tower-targets hidden">КАМЕНЬ ГОТОВ · ПРИЦЕЛЬТЕСЬ ПЕРЕКРЕСТИЕМ · <kbd>ЛКМ</kbd> БРОСОК</div>
+      <div id="chop-progress" class="chop-progress hidden"><b>РУБКА</b><span></span><i><em></em></i></div>
+      <div id="tower-targets" class="tower-targets hidden">ЛКМ — БРОСИТЬ ПО ПЕРЕКРЕСТИЮ · РАССЧИТАЙТЕ УГОЛ</div>
+      <button id="leave-tower-button" class="leave-tower-button hidden" type="button">СПУСТИТЬСЯ С БАШНИ <kbd>X</kbd></button>
       <div id="warning" class="warning hidden"></div>
       <div id="toast-stack" class="toast-stack"></div>
       <div id="damage-vignette" class="damage-vignette"></div>
@@ -132,6 +163,7 @@
     </section>
   </main>
 
+  <script src="/see-escape/js/learning.js"></script>
   <script type="module" src="/js/fps/main.js"></script>
 </body>
 </html>

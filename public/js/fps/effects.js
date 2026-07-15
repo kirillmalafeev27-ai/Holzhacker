@@ -2,10 +2,12 @@ import * as THREE from "three";
 
 
 export class EffectsSystem {
-  constructor(scene) {
+  constructor(scene, { profileId = "normal" } = {}) {
     this.scene = scene;
     this.pool = [];
     this.active = [];
+    this.profileId = profileId;
+    this.particleScale = profileId === "low" ? .42 : 1;
     this.geometry = new THREE.TetrahedronGeometry(.08, 0);
     this.materials = {
       wood: new THREE.MeshStandardMaterial({ color: 0xb76528, roughness: .9 }),
@@ -15,8 +17,10 @@ export class EffectsSystem {
       repair: new THREE.MeshBasicMaterial({ color: 0x79df78 }),
       smoke: new THREE.MeshStandardMaterial({ color: 0x282d29, roughness: 1, transparent: true }),
       impact: new THREE.MeshStandardMaterial({ color: 0x6d6b60, roughness: 1 }),
+      mud: new THREE.MeshStandardMaterial({ color: 0x6b3f20, roughness: 1 }),
     };
-    for (let index = 0; index < 180; index += 1) {
+    const poolSize = profileId === "low" ? 72 : 180;
+    for (let index = 0; index < poolSize; index += 1) {
       const mesh = new THREE.Mesh(this.geometry, this.materials.dust);
       mesh.visible = false;
       mesh.castShadow = false;
@@ -31,7 +35,7 @@ export class EffectsSystem {
     particle.mesh.visible = true;
     particle.mesh.material = this.materials[kind] || this.materials.dust;
     particle.mesh.position.copy(position);
-    particle.mesh.scale.setScalar(scale);
+    particle.mesh.scale.setScalar(scale * this.particleScale);
     particle.velocity.copy(velocity);
     particle.life = life;
     particle.maxLife = life;
@@ -41,10 +45,21 @@ export class EffectsSystem {
   }
 
   burst(kind, position, count, speed=3, life=.8, scale=1) {
-    for (let index = 0; index < count; index += 1) {
+    const adjustedCount = Math.max(1, Math.round(count * this.particleScale));
+    for (let index = 0; index < adjustedCount; index += 1) {
       const angle = Math.random() * Math.PI * 2;
       const velocity = new THREE.Vector3(Math.cos(angle), .5 + Math.random() * 1.3, Math.sin(angle)).multiplyScalar(speed * (.45 + Math.random() * .65));
       this.spawn(kind, position, velocity, life * (.7 + Math.random() * .6), scale * (.65 + Math.random() * .7));
+    }
+  }
+
+  setPerformanceProfile(profileId) {
+    this.profileId = profileId;
+    this.particleScale = profileId === "low" ? .42 : 1;
+    if (profileId !== "low") return;
+    for (let index = this.active.length - 1; index >= 0 && this.active.length > 54; index -= 1) {
+      this.active[index].mesh.visible = false;
+      this.active.splice(index, 1);
     }
   }
 
@@ -71,9 +86,26 @@ export class EffectsSystem {
     this.burst("dust", position, 24, 4.0, 1.25, 2.1);
   }
 
-  smoke(position) {
-    for (let index = 0; index < 4; index += 1) {
-      this.spawn("smoke", position, new THREE.Vector3((Math.random() - .5) * .25, .5 + Math.random() * .35, (Math.random() - .5) * .25), 2.2, 2.6, -.05);
+  dirtImpact(position) {
+    this.burst("mud", position.clone().add(new THREE.Vector3(0, .08, 0)), 18, 3.1, 1.05, 2.1);
+    this.burst("dust", position, 8, 2.2, .85, 1.35);
+  }
+
+  fortImpact(position) {
+    this.burst("wood", position, 24, 5.3, 1.15, 1.6);
+    this.burst("freshWood", position, 12, 4.2, .9, 1.15);
+    this.burst("dust", position, 12, 3.2, 1.05, 1.7);
+  }
+
+  catapultImpact(position) {
+    this.burst("wood", position, 26, 5.8, 1.2, 1.7);
+    this.burst("freshWood", position, 10, 4.6, 1.0, 1.25);
+    this.burst("impact", position, 8, 3.5, .8, 1.0);
+  }
+
+  smoke(position, count=4) {
+    for (let index = 0; index < count; index += 1) {
+      this.spawn("smoke", position, new THREE.Vector3((Math.random() - .5) * .34, .65 + Math.random() * .48, (Math.random() - .5) * .34), 2.65, 3.15, -.07);
     }
   }
 

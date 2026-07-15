@@ -1,22 +1,35 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
 import { mergeGeometries, mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
-import { ASSET_URLS } from "./config.js";
+import { ASSET_FALLBACK_URLS, assetUrlsForProfile } from "./config.js";
 
 
 export class AssetStore {
-  constructor(onProgress = () => {}) {
+  constructor(onProgress = () => {}, profileId = "normal") {
     this.loader = new GLTFLoader();
+    // Required for GLBs encoded with EXT_meshopt_compression. The decoder is
+    // bundled with the same Three.js version, so it adds no network CDN risk.
+    this.loader.setMeshoptDecoder(MeshoptDecoder);
     this.onProgress = onProgress;
+    this.urls = assetUrlsForProfile(profileId);
     this.assets = new Map();
     this.markers = new Map();
   }
 
   async loadAll() {
-    const entries = Object.entries(ASSET_URLS);
+    const entries = Object.entries(this.urls);
     let completed = 0;
     await Promise.all(entries.map(async ([key, url]) => {
-      const gltf = await this.loader.loadAsync(url);
+      let gltf;
+      try {
+        gltf = await this.loader.loadAsync(url);
+      } catch (error) {
+        const fallback = ASSET_FALLBACK_URLS[key];
+        if (!fallback || fallback === url) throw error;
+        console.warn(`Optimized asset failed, loading original ${key}:`, error);
+        gltf = await this.loader.loadAsync(fallback);
+      }
       this.prepareScene(gltf.scene, key);
       this.assets.set(key, gltf.scene);
       completed += 1;
@@ -36,14 +49,12 @@ export class AssetStore {
         this.prepareWater(object);
         return;
       }
-      object.castShadow = key.startsWith("nav") ? false : true;
+      object.castShadow = !key.startsWith("nav");
       object.receiveShadow = true;
       for (const material of materials) {
         material.precision = "mediump";
-        if (material.name === "Fresh wood texture") {
-          // The Blender procedural grain does not survive glTF export, so the
-          // cut surface arrives untinted (white). Tint it like fresh-cut wood.
-          material.color.setHex(0xcf9448);
+        if (/Fresh wood texture/i.test(material.name)) {
+          material.color?.setHex(0xcf9448);
           material.roughness = .72;
           material.metalness = 0;
         }
@@ -52,9 +63,6 @@ export class AssetStore {
   }
 
   prepareWater(object) {
-    // The exported flat-shaded ribbon with the mediump blend material reads
-    // as noisy, pixelated banding; smooth the normals, use a clean highp
-    // material and keep tree shadows from speckling the surface.
     object.geometry = mergeVertices(object.geometry);
     object.geometry.computeVertexNormals();
     const water = new THREE.MeshStandardMaterial({
@@ -62,9 +70,10 @@ export class AssetStore {
       roughness: .16,
       metalness: .05,
       transparent: true,
-      opacity: .8,
+      opacity: .82,
       depthWrite: false,
       side: THREE.DoubleSide,
+      precision: "highp",
     });
     water.name = "StreamWater";
     object.material = water;
@@ -89,13 +98,8 @@ export class AssetStore {
     const clone = source.clone(true);
     clone.traverse((object) => {
       if (object.isMesh) {
-        if (object.userData.noShadow) {
-          object.castShadow = false;
-          object.receiveShadow = false;
-        } else {
-          object.castShadow = source.name.includes("nav") ? false : true;
-          object.receiveShadow = true;
-        }
+        object.castShadow = object.userData.noShadow ? false : !source.name.includes("nav");
+        object.receiveShadow = !object.userData.noShadow;
       }
     });
     return clone;
@@ -105,11 +109,12 @@ export class AssetStore {
     world.updateMatrixWorld(true);
     const groups = new Map();
     const candidates = [];
+    const instancedOwnerPattern = /ForestTree_|RockCluster_|Undergrowth_|ClearingDetail_|ConstructionStake_|ConstructionRope_/;
     world.traverse((object) => {
       if (!object.isMesh) return;
       let owner = object;
-      while (owner.parent && owner.parent !== world && !/ForestTree_|RockCluster_|Undergrowth_|ClearingDetail_/.test(owner.name)) owner = owner.parent;
-      if (!/ForestTree_|RockCluster_|Undergrowth_|ClearingDetail_/.test(owner.name)) return;
+      while (owner.parent && owner.parent !== world && !instancedOwnerPattern.test(owner.name)) owner = owner.parent;
+      if (!instancedOwnerPattern.test(owner.name)) return;
       const materials = Array.isArray(object.material) ? object.material : [object.material];
       if (materials.length !== 1) return;
       const key = `${object.geometry.uuid}:${materials[0].uuid}`;
@@ -122,10 +127,12 @@ export class AssetStore {
       if (group.meshes.length < 3) continue;
       const instance = new THREE.InstancedMesh(group.geometry, group.material, group.meshes.length);
       instance.name = `InstancedNature_${group.material.name}_${group.meshes.length}`;
-      instance.castShadow = true;
+      instance.castShadow = group.meshes.some((mesh) => mesh.castShadow);
       instance.receiveShadow = true;
       group.meshes.forEach((mesh, index) => instance.setMatrixAt(index, mesh.matrixWorld));
       instance.instanceMatrix.needsUpdate = true;
+      instance.computeBoundingBox();
+      instance.computeBoundingSphere();
       world.add(instance);
       for (const mesh of group.meshes) mesh.parent?.remove(mesh);
       drawCallsSaved += group.meshes.length - 1;
@@ -156,19 +163,19 @@ export class AssetStore {
     return merged;
   }
 
-  worldCollisionData() {
+  worldCollisionData(world=this.assets.get("world")) {
     const colliders = [];
-    const world = this.assets.get("world");
     world.updateMatrixWorld(true);
     world.traverse((object) => {
-      const radius = Number(object.userData?.collisionRadius || 0);
+      const inferredTreeRadius = /^ForestTree_\d+$/.test(object.name) ? .82 : 0;
+      const radius = Number(object.userData?.collisionRadius || inferredTreeRadius);
       if (!radius) return;
       const position = object.getWorldPosition(new THREE.Vector3());
-      // collisionRadius is authored in world units. Multiplying it by the
-      // node scale turned every 6-9x scaled pine into a 5-8 m collider and
-      // fused the forest belt into an impassable wall around the clearing.
       colliders.push({
         position,
+        // collisionRadius is authored in world metres. Tree display scale is
+        // already accounted for by the authoring script and must not inflate
+        // these circles into an impassable forest wall.
         radius,
         kind: object.userData?.kind || "obstacle",
       });
