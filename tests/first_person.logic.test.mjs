@@ -459,6 +459,8 @@ pass("L authored viewmodel modes");
 // M — recall fallback accepts harmless typography differences and explains
 // a genuinely different answer immediately when AI is not configured.
 assert.equal(localEvaluation("  Der Baum. ", "der Baum").correct, true);
+assert.equal(localEvaluation("Das Maedchen hoert Musik.", "Das Mädchen hört Musik.").correct, true);
+assert.equal(localEvaluation("Ich fuehle mich muede.", "Ich fühle mich müde.").correct, true);
 const recallWrong = localEvaluation("die Bäume", "der Baum");
 assert.equal(recallWrong.correct, false);
 assert.match(recallWrong.explanation, /der Baum/);

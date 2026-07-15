@@ -30,6 +30,11 @@ function normalizeAnswer(value) {
   return String(value || '')
     .normalize('NFKC')
     .toLocaleLowerCase('de-DE')
+    // German keyboard fallback: umlauts and their two-letter spellings are
+    // equivalent in free-text answers.
+    .replace(/ä/g, 'ae')
+    .replace(/ö/g, 'oe')
+    .replace(/ü/g, 'ue')
     .replace(/[„“”"'`´.,!?;:()[\]{}]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -50,6 +55,7 @@ async function requestAiEvaluation(payload) {
   const prompt = [
     'Ты проверяешь свободный ответ ученика по немецкому языку.',
     'Учитывай смысл, грамматику и требуемую форму. Не считай ошибками регистр, лишние пробелы и необязательную пунктуацию.',
+    'Считай ä и ae, ö и oe, ü и ue полностью равноправными вариантами написания. Никогда не отмечай такую замену как ошибку.',
     'Заданный русский перевод — обязательная целевая мысль. Не принимай грамматически верный ответ, если он меняет смысл перевода.',
     'Если ответ неверен, коротко и конкретно объясни по-русски, что именно не так и как ответить правильно. Обязательно напиши, как должно переводиться полное правильное предложение на русский.',
     'Верни только JSON: {"correct":boolean,"explanation":"...","correctAnswer":"..."}.',

@@ -147,7 +147,7 @@ class RecallQuizGate {
       </div>
       <div class="action-quiz-question">${visibleQuestion}</div>
       <form class="recall-answer-form">
-        <label for="recall-answer">Введите ответ по-немецки</label>
+        <label for="recall-answer">Введите ответ по-немецки · ä/ö/ü можно писать ae/oe/ue</label>
         <div class="recall-answer-row">
           <input id="recall-answer" name="answer" type="text" autocomplete="off" spellcheck="false" maxlength="600" required>
           <button type="submit">Проверить</button>
@@ -196,7 +196,14 @@ class RecallQuizGate {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       result = await response.json();
     } catch (_) {
-      const normalize = (value) => String(value || "").toLocaleLowerCase("de-DE").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+      const normalize = (value) => String(value || "")
+        .normalize("NFKC")
+        .toLocaleLowerCase("de-DE")
+        .replace(/ä/g, "ae")
+        .replace(/ö/g, "oe")
+        .replace(/ü/g, "ue")
+        .replace(/[^\p{L}\p{N}]+/gu, " ")
+        .trim();
       const correct = normalize(userAnswer) === normalize(expectedAnswer);
       result = {
         correct,
