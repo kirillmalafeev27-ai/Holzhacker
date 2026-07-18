@@ -14,8 +14,11 @@ export class NoteSystem {
   }
 
   drop(position, count=2) {
+    const dropped = [];
     for (let index = 0; index < count; index += 1) {
-      const offset = new THREE.Vector3(index ? .65 : -.65, 0, index ? -.35 : .35);
+      const offset = count === 1
+        ? new THREE.Vector3()
+        : new THREE.Vector3(index ? .65 : -.65, 0, index ? -.35 : .35);
       const safe = this.navigation.nearestPoint(position.clone().add(offset));
       const object = this.assets.clone("note");
       object.position.copy(safe).add(new THREE.Vector3(0, .24, 0));
@@ -29,8 +32,11 @@ export class NoteSystem {
         }
       });
       this.scene.add(object);
-      this.notes.push({ object, collected: false, phase: Math.random() * Math.PI * 2, baseY: object.position.y });
+      const note = { object, collected: false, phase: Math.random() * Math.PI * 2, baseY: object.position.y };
+      this.notes.push(note);
+      dropped.push(note);
     }
+    return dropped;
   }
 
   update(dt, playerPosition) {

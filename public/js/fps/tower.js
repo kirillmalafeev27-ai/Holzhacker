@@ -77,7 +77,7 @@ export class TowerSystem {
       scale: 1.05, maxTime: 5, groundHeight: -Infinity,
       shouldImpact: (position) => {
         const catapult = this.catapults.catapults.find((candidate) => {
-          if (candidate.destroyedState) return false;
+          if (!this.catapults.isTargetable(candidate)) return false;
           const horizontal = Math.hypot(position.x - candidate.position.x, position.z - candidate.position.z);
           return horizontal < CONFIG.CATAPULTS.HIT_RADIUS && position.y < candidate.position.y + 3.4;
         });
@@ -104,7 +104,7 @@ export class TowerSystem {
   throwAt(index) {
     if (!this.atTower || !this.stoneReady || this.transition) return false;
     const target = this.catapults.catapults[index];
-    if (!target || target.destroyedState) return false;
+    if (!this.catapults.isTargetable(target)) return false;
     this.stoneReady = false;
     this.ui.setTowerTargets(false);
     this.player.setStoneMode(false);

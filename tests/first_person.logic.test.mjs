@@ -14,6 +14,7 @@ import { CatapultSystem } from "../public/js/fps/enemies.js";
 import { AssetStore } from "../public/js/fps/assets.js";
 import { adjustedCatapultPosition, blocksTowerShot, catapultPatrolEndpoints, catapultPositionPool, relocateOffTowerShots } from "../public/js/fps/world-layout.js";
 import { PerformanceDetector, detectHardwareProfile, shouldKeepDecoration } from "../public/js/fps/performance.js";
+import { GUIDANCE_FOCUS_SECONDS, GuidanceSystem, lookAnglesToTarget } from "../public/js/fps/guidance.js";
 
 const require = createRequire(import.meta.url);
 const { localEvaluation } = require("../recall-evaluation.cjs");
@@ -37,6 +38,29 @@ assert.equal(runtime.demo, true);
 assert.equal(runtime.preset, "tree");
 assert.equal(runtime.timeScale, 1);
 pass("A runtime modes");
+
+
+// A2 — the 3D objective arrow tracks its target and forces the camera for five seconds.
+const forwardLook = lookAnglesToTarget(new THREE.Vector3(), new THREE.Vector3(0, 0, -10));
+assert.ok(Math.abs(forwardLook.yaw) < 1e-9);
+assert.ok(Math.abs(forwardLook.pitch) < 1e-9);
+const guidanceScene = new THREE.Group();
+let forcedLooks = 0;
+let guidanceLabel = "";
+const guidance = new GuidanceSystem(
+  guidanceScene,
+  { forceLookAt() { forcedLooks += 1; } },
+  { setGuidance(text) { guidanceLabel = text; } },
+);
+const guidanceTarget = new THREE.Vector3(8, 0, -4);
+guidance.pointTo(() => guidanceTarget, "Идите к дереву", { focus: true });
+guidance.update(.1);
+assert.equal(guidance.arrow.visible, true);
+assert.equal(guidanceLabel, "Идите к дереву");
+assert.equal(forcedLooks, 1);
+assert.ok(guidance.focusRemaining > GUIDANCE_FOCUS_SECONDS - .11);
+assert.ok(Math.abs(guidance.arrow.position.x - guidanceTarget.x) < 1e-9);
+pass("A2 dynamic guidance");
 
 
 // B — the first correct learning answer grants exactly two manual axe hits;
@@ -369,17 +393,26 @@ const catapultAssets = {
   clone() { return new THREE.Group(); },
 };
 let catapultNotesDropped = 0;
+const catapultNotePositions = [];
 const catapultSystem = new CatapultSystem(
   new THREE.Group(), catapultAssets,
   { launch() {} }, { health: 1000 },
   { position: new THREE.Vector3(), velocity: new THREE.Vector3(), damage() {} },
-  { drop(_position, count) { catapultNotesDropped += count; } }, silentEffects, silentAudio,
+  { drop(position, count) {
+    catapultNotePositions.push(position.clone());
+    catapultNotesDropped += count;
+    return Array.from({ length: count }, () => ({ object: { position: position.clone() } }));
+  } }, silentEffects, silentAudio,
 );
+assert.equal(catapultSystem.catapults.length, CONFIG.CATAPULTS.COUNT * CONFIG.NOTES.MATCHES);
+assert.equal(CONFIG.NOTES.PER_MATCH, CONFIG.CATAPULTS.COUNT);
 const movingCatapult = catapultSystem.catapults[0];
 const anchor = movingCatapult.anchor.clone();
-const catapultCollider = catapultSystem.collisionData()[0];
+const catapultColliders = catapultSystem.collisionData();
+const catapultCollider = catapultColliders[0];
 assert.equal(catapultCollider.position, movingCatapult.position);
 assert.equal(catapultCollider.radius, CONFIG.CATAPULTS.COLLISION_RADIUS);
+assert.equal(catapultColliders[CONFIG.CATAPULTS.COUNT].enabled, false);
 catapultSystem.activate();
 catapultSystem.update(1);
 assert.ok(movingCatapult.position.distanceTo(anchor) > .2);
@@ -388,33 +421,44 @@ assert.ok(movingCatapult.intact.position.distanceTo(movingCatapult.position) < 1
 const patrol = catapultPatrolEndpoints(anchor);
 assert.ok(Math.abs(patrol.back.distanceTo(patrol.front) - CONFIG.CATAPULTS.PATROL_DISTANCE * 2) < 1e-9);
 assert.equal(CONFIG.CATAPULTS.HITS_TO_DESTROY, 1);
-const originalAnchors = catapultSystem.catapults.map((catapult) => catapult.anchor.clone());
-for (const catapult of catapultSystem.catapults) {
+const firstMatchCatapults = catapultSystem.catapults.slice(0, CONFIG.CATAPULTS.COUNT);
+const secondMatchCatapults = catapultSystem.catapults.slice(CONFIG.CATAPULTS.COUNT);
+const destroyedPositions = firstMatchCatapults.map((catapult) => catapult.position.clone());
+for (const catapult of firstMatchCatapults) {
   assert.equal(catapultSystem.hit(catapult.id), true);
   assert.equal(catapult.destroyedState, true);
 }
+for (const catapult of secondMatchCatapults) assert.equal(catapultSystem.hit(catapult.id), false);
 assert.equal(catapultNotesDropped, 3);
-catapultSystem.update(CONFIG.CATAPULTS.REINFORCEMENT_DELAY + CONFIG.CATAPULTS.REINFORCEMENT_STAGGER * 2 + .1);
-const reinforcedAnchors = catapultSystem.catapults.map((catapult) => catapult.anchor.clone());
-for (const reinforced of reinforcedAnchors) {
-  assert.ok(originalAnchors.every((original) => reinforced.distanceTo(original) > 1));
+const safeNoteDistance = CONFIG.CATAPULTS.COLLISION_RADIUS
+  + CONFIG.PLAYER.RADIUS
+  + CONFIG.CATAPULTS.NOTE_DROP_CLEARANCE;
+for (let index = 0; index < destroyedPositions.length; index += 1) {
+  const origin = destroyedPositions[index];
+  const dropped = catapultNotePositions[index];
+  assert.ok(Math.abs(dropped.distanceTo(origin) - safeNoteDistance) < 1e-9);
+  assert.ok(dropped.clone().sub(origin).setY(0).normalize().dot(origin.clone().setY(0).normalize()) < -.999);
 }
-for (let left = 0; left < reinforcedAnchors.length; left += 1) {
-  for (let right = left + 1; right < reinforcedAnchors.length; right += 1) {
-    assert.ok(reinforcedAnchors[left].distanceTo(reinforcedAnchors[right]) > 5);
-  }
+catapultSystem.update(60);
+for (let index = 0; index < firstMatchCatapults.length; index += 1) {
+  const catapult = firstMatchCatapults[index];
+  assert.equal(catapult.destroyedState, true);
+  assert.ok(catapult.position.distanceTo(destroyedPositions[index]) < 1e-9);
+  assert.equal(catapultSystem.hit(catapult.id), false);
 }
-catapultSystem.update(CONFIG.CATAPULTS.REINFORCEMENT_ARRIVAL_DURATION + .1);
-for (const catapult of catapultSystem.catapults) {
-  assert.equal(catapult.state, "idle");
+assert.equal(catapultSystem.activateMatch(1), true);
+for (let index = 0; index < secondMatchCatapults.length; index += 1) {
+  const catapult = secondMatchCatapults[index];
+  assert.equal(catapult.intact.visible, true);
+  assert.equal(catapultColliders[index].enabled, false);
+  assert.equal(catapultColliders[index + CONFIG.CATAPULTS.COUNT].enabled, true);
   assert.equal(catapultSystem.hit(catapult.id), true);
 }
 assert.equal(catapultNotesDropped, CONFIG.NOTES.TOTAL);
-catapultSystem.update(CONFIG.CATAPULTS.REINFORCEMENT_DELAY + CONFIG.CATAPULTS.REINFORCEMENT_STAGGER * 2 + .1);
-catapultSystem.update(CONFIG.CATAPULTS.REINFORCEMENT_ARRIVAL_DURATION + .1);
-assert.equal(catapultSystem.hit(0), true);
+catapultSystem.update(60);
+for (const catapult of secondMatchCatapults) assert.equal(catapult.destroyedState, true);
 assert.equal(catapultNotesDropped, CONFIG.NOTES.TOTAL);
-pass("K moving solid catapults");
+pass("K two permanent catapult matches");
 
 
 // L — the three authored first-person pose assets switch cleanly and the
@@ -591,5 +635,5 @@ assert.match(recallSource, /poolMode: true/);
 pass("S strict ten-question AI cycle");
 
 
-console.log(`FIRST_PERSON_LOGIC_OK ${passed.length}/21`);
+console.log(`FIRST_PERSON_LOGIC_OK ${passed.length}/22`);
 console.log(passed.join(" | "));

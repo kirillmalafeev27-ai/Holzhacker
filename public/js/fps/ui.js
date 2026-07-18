@@ -7,14 +7,14 @@ export class UIManager {
     this.elements = {
       loading: byId("loading"), loadingBar: byId("loading-bar"), loadingStatus: byId("loading-status"), loadingDetail: byId("loading-detail"),
       startScreen: byId("boot"), startButton: byId("start"), performanceBadge: byId("performance-badge"), hud: byId("hud"), pause: byId("pause-screen"),
-      healthText: byId("health-text"), healthBar: byId("health-bar"), baseText: byId("base-health-text"), baseBar: byId("base-health-bar"),
+      healthText: byId("health-text"), healthBar: byId("health-bar"), baseText: byId("base-health-text"), baseBar: byId("base-health-bar"), stockpile: byId("stockpile-count"), repairButton: byId("repair-button"),
       phase: byId("phase-label"), timer: byId("attack-timer"), timerSubtitle: byId("attack-subtitle"),
       objectiveTitle: byId("objective-title"), objectiveText: byId("objective-text"), logs: byId("logs-count"), stage: byId("build-stage"), notes: byId("notes-count"),
-      prompt: byId("interaction-prompt"), promptText: byId("interaction-prompt")?.querySelector("span"), carry: byId("carry-indicator"), chopProgress: byId("chop-progress"), chopProgressText: byId("chop-progress")?.querySelector("span"), chopProgressBar: byId("chop-progress")?.querySelector("em"), towerTargets: byId("tower-targets"), leaveTower: byId("leave-tower-button"),
+      prompt: byId("interaction-prompt"), promptText: byId("interaction-prompt")?.querySelector("span"), carry: byId("carry-indicator"), chopProgress: byId("chop-progress"), chopProgressText: byId("chop-progress")?.querySelector("span"), chopProgressBar: byId("chop-progress")?.querySelector("em"), towerTargets: byId("tower-targets"), leaveTower: byId("leave-tower-button"), guidance: byId("guidance-banner"), guidanceText: byId("guidance-text"), guidanceFocus: byId("guidance-focus"), cursorHint: byId("cursor-mode-hint"),
       warning: byId("warning"), toasts: byId("toast-stack"), damage: byId("damage-vignette"), dodge: byId("dodge-flash"),
       questionModal: byId("question-modal"), questionPrompt: byId("question-prompt"), questionOptions: byId("question-options"), questionFeedback: byId("question-feedback"),
       debugPanel: byId("debug-panel"), debugFps: byId("debug-fps"), debugStage: byId("debug-stage"), debugGate: byId("debug-gate"), debugAgents: byId("debug-agents"), debugPath: byId("debug-path"), debugState: byId("debug-state"),
-      end: byId("end-screen"), endCrest: byId("end-crest"), endKicker: byId("end-kicker"), endTitle: byId("end-title"), endMessage: byId("end-message"), endNotes: byId("end-notes"), endBase: byId("end-base"), restart: byId("restart-button"),
+      end: byId("end-screen"), endCrest: byId("end-crest"), endKicker: byId("end-kicker"), endTitle: byId("end-title"), endMessage: byId("end-message"), endNotes: byId("end-notes"), endBase: byId("end-base"), endStoryPicker: byId("end-story-picker"), restart: byId("restart-button"),
     };
     this.warningTimer = null;
     this.questionHandler = null;
@@ -52,18 +52,20 @@ export class UIManager {
     this.elements.pause.classList.toggle("hidden", !paused);
   }
 
-  update({ playerHealth, baseHealth, elapsed, attackActive, logs, stage, notes, objective, debug }) {
+  update({ playerHealth, baseHealth, elapsed, attackActive, logs, storedLogs, stage, notes, match, matchNotes, objective, debug }) {
     this.elements.healthText.textContent = `${playerHealth} / ${CONFIG.PLAYER.MAX_HEALTH}`;
     this.elements.healthBar.style.width = `${playerHealth / CONFIG.PLAYER.MAX_HEALTH * 100}%`;
     this.elements.baseText.textContent = `${Math.ceil(baseHealth)} / ${CONFIG.BUILD.MAX_HEALTH}`;
     this.elements.baseBar.style.width = `${baseHealth / CONFIG.BUILD.MAX_HEALTH * 100}%`;
+    this.elements.stockpile.textContent = String(storedLogs);
+    this.elements.repairButton.disabled = storedLogs <= 0 || baseHealth >= CONFIG.BUILD.MAX_HEALTH;
     const remaining = Math.max(0, Math.ceil(CONFIG.ATTACK.START_SECONDS - elapsed));
     this.elements.phase.textContent = attackActive ? "ОБОРОНА" : "ПОДГОТОВКА";
     this.elements.timer.textContent = attackActive ? "БОЙ" : `${String(Math.floor(remaining / 60)).padStart(2, "0")}:${String(remaining % 60).padStart(2, "0")}`;
     this.elements.timerSubtitle.textContent = attackActive ? "НАПАДЕНИЕ ИДЁТ" : "ДО НАПАДЕНИЯ";
     this.elements.logs.textContent = `${logs} / ${CONFIG.BUILD.TOTAL_LOGS}`;
     this.elements.stage.textContent = `${stage} / 3`;
-    this.elements.notes.textContent = `${notes} / ${CONFIG.NOTES.TOTAL}`;
+    this.elements.notes.textContent = `${matchNotes} / ${CONFIG.NOTES.PER_MATCH} · матч ${match}/${CONFIG.NOTES.MATCHES}`;
     this.elements.objectiveTitle.textContent = objective.title;
     this.elements.objectiveText.textContent = objective.text;
     if (debug) {
@@ -84,6 +86,21 @@ export class UIManager {
 
   setCarrying(value) {
     this.elements.carry.classList.toggle("hidden", !value);
+  }
+
+  setGuidance(text, focusSeconds = 0) {
+    const visible = Boolean(text);
+    this.elements.guidance.classList.toggle("hidden", !visible);
+    if (!visible) return;
+    this.elements.guidanceText.textContent = text;
+    this.elements.guidanceFocus.textContent = focusSeconds > 0
+      ? `Камера наводится автоматически: ${Math.ceil(focusSeconds)} с`
+      : "Следуйте за движущейся 3D-стрелкой";
+  }
+
+  setCursorMode(value) {
+    this.elements.hud.classList.toggle("cursor-mode", value);
+    this.elements.cursorHint.classList.toggle("hidden", !value);
   }
 
   setChopProgress(progress = null) {
@@ -173,6 +190,8 @@ export class UIManager {
       : reason === "player" ? "Третье попадание оказалось смертельным." : "Прочность стен упала до нуля.";
     this.elements.endNotes.textContent = `${notes} / ${CONFIG.NOTES.TOTAL}`;
     this.elements.endBase.textContent = String(Math.ceil(baseHealth));
+    this.elements.endStoryPicker.classList.toggle("hidden", !victory);
+    this.elements.restart.textContent = victory ? "НАЧАТЬ С ВЫБРАННОЙ ИСТОРИЕЙ" : "НАЧАТЬ ЗАНОВО";
     this.elements.end.classList.remove("hidden");
   }
 }

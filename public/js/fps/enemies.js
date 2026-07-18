@@ -163,10 +163,9 @@ export class CatapultSystem {
     this.audio = audio;
     this.catapults = [];
     this.active = false;
+    this.activeMatch = 0;
     this.notesRemainingToDrop = CONFIG.NOTES.TOTAL;
-    this.nextPositionIndex = CONFIG.CATAPULTS.COUNT;
     this.onDestroyed = () => {};
-    this.onReinforced = () => {};
     this.spawnModels();
   }
 
@@ -177,26 +176,29 @@ export class CatapultSystem {
       return this.groundPosition(adjustedCatapultPosition(marker));
     });
     this.positionPool = catapultPositionPool(initialPositions).map((position) => this.groundPosition(position));
-    for (let index = 0; index < CONFIG.CATAPULTS.COUNT; index += 1) {
+    const totalCatapults = CONFIG.CATAPULTS.COUNT * CONFIG.NOTES.MATCHES;
+    for (let index = 0; index < totalCatapults; index += 1) {
       const position = this.positionPool[index].clone();
+      const matchIndex = Math.floor(index / CONFIG.CATAPULTS.COUNT);
+      const slot = index % CONFIG.CATAPULTS.COUNT;
       const intact = this.assets.clone("catapult");
       const destroyed = this.assets.clone("catapultDestroyed");
       intact.position.copy(position);
       destroyed.position.copy(position);
       intact.rotation.y = Math.atan2(-position.x, -position.z);
       destroyed.rotation.y = intact.rotation.y;
+      intact.visible = matchIndex === 0;
       destroyed.visible = false;
       this.scene.add(intact, destroyed);
       let arm = null;
       intact.traverse((object) => { if (object.userData?.animatedPart === "throwingArm" || /ThrowingArm/.test(object.name)) arm = object; });
       this.catapults.push({
-        id: index, intact, destroyed, arm, position: position.clone(), anchor: position.clone(),
+        id: index, slot, matchIndex, intact, destroyed, arm, position: position.clone(), anchor: position.clone(),
         travelDirection: position.clone().setY(0).normalize().multiplyScalar(-1),
-        patrolTime: 0, patrolPhase: index % 2 === 0 ? 0 : Math.PI,
-        patrolRate: 1 + (index - 1) * .08,
-        health: CONFIG.CATAPULTS.HITS_TO_DESTROY, state: "idle", timer: 1.8 + index * 1.6,
-        destroyedState: false, recoil: 0, smokeTimer: 0, respawnTimer: 0,
-        arrivalProgress: 0, arrivalStart: position.clone(), generation: 0,
+        patrolTime: 0, patrolPhase: slot % 2 === 0 ? 0 : Math.PI,
+        patrolRate: 1 + (slot - 1) * .08,
+        health: CONFIG.CATAPULTS.HITS_TO_DESTROY, state: matchIndex === 0 ? "idle" : "waiting", timer: 1.8 + slot * 1.6,
+        destroyedState: false, recoil: 0, smokeTimer: 0, smokeRemaining: 0,
       });
     }
   }
@@ -210,13 +212,39 @@ export class CatapultSystem {
 
   activate() {
     this.active = true;
+    this.activateMatch(this.activeMatch);
+  }
+
+  activateMatch(matchIndex) {
+    if (matchIndex < 0 || matchIndex >= CONFIG.NOTES.MATCHES) return false;
+    this.activeMatch = matchIndex;
+    for (const catapult of this.catapults) {
+      if (catapult.matchIndex !== matchIndex || catapult.destroyedState) continue;
+      catapult.state = "idle";
+      catapult.timer = 1.8 + catapult.slot * 1.6;
+      catapult.intact.visible = true;
+      catapult.destroyed.visible = false;
+    }
+    return true;
+  }
+
+  isTargetable(catapult) {
+    return Boolean(
+      this.active
+      && catapult
+      && catapult.matchIndex === this.activeMatch
+      && catapult.state !== "waiting"
+      && !catapult.destroyedState
+    );
   }
 
   collisionData() {
+    const system = this;
     return this.catapults.map((catapult) => ({
       kind: "catapult",
       position: catapult.position,
       radius: CONFIG.CATAPULTS.COLLISION_RADIUS,
+      get enabled() { return catapult.matchIndex === system.activeMatch && catapult.state !== "waiting"; },
     }));
   }
 
@@ -230,81 +258,18 @@ export class CatapultSystem {
     catapult.destroyed.position.copy(catapult.position);
   }
 
-  nextReinforcementAnchor(catapult) {
-    for (let attempt = 0; attempt < this.positionPool.length * 2; attempt += 1) {
-      const candidate = this.positionPool[this.nextPositionIndex % this.positionPool.length].clone();
-      this.nextPositionIndex += 1;
-      if (candidate.distanceTo(catapult.anchor) < 1) continue;
-      const occupied = this.catapults.some((other) => other !== catapult && candidate.distanceTo(other.anchor) < 5);
-      if (!occupied) return this.groundPosition(candidate);
-    }
-    const angle = Math.atan2(catapult.anchor.z, catapult.anchor.x) + CONFIG.CATAPULTS.REINFORCEMENT_ANGLE_OFFSET;
-    const radius = Math.hypot(catapult.anchor.x, catapult.anchor.z) + CONFIG.CATAPULTS.REINFORCEMENT_RADIAL_OFFSET;
-    return this.groundPosition(new THREE.Vector3(Math.cos(angle) * radius, catapult.anchor.y, Math.sin(angle) * radius));
-  }
-
-  startReinforcement(catapult) {
-    const nextAnchor = this.nextReinforcementAnchor(catapult);
-    catapult.anchor.copy(nextAnchor);
-    catapult.travelDirection.copy(nextAnchor).setY(0).normalize().multiplyScalar(-1);
-    catapult.arrivalStart.copy(nextAnchor).addScaledVector(
-      catapult.travelDirection,
-      -CONFIG.CATAPULTS.REINFORCEMENT_ARRIVAL_DISTANCE,
-    );
-    catapult.position.copy(catapult.arrivalStart);
-    catapult.arrivalProgress = 0;
-    catapult.patrolTime = 0;
-    catapult.patrolPhase = catapult.id % 2 === 0 ? 0 : Math.PI;
-    catapult.health = CONFIG.CATAPULTS.HITS_TO_DESTROY;
-    catapult.state = "reinforcing";
-    catapult.destroyedState = false;
-    catapult.generation += 1;
-    catapult.recoil = 0;
-    catapult.timer = 2.2 + catapult.id * .7;
-    const facing = Math.atan2(-nextAnchor.x, -nextAnchor.z);
-    catapult.intact.rotation.y = facing;
-    catapult.destroyed.rotation.y = facing;
-    catapult.intact.position.copy(catapult.position);
-    catapult.destroyed.position.copy(catapult.position);
-    catapult.intact.visible = true;
-    catapult.destroyed.visible = false;
-    if (catapult.arm) catapult.arm.rotation.x = 0;
-  }
-
-  updateReinforcement(catapult, dt) {
-    catapult.arrivalProgress = Math.min(
-      1,
-      catapult.arrivalProgress + dt / CONFIG.CATAPULTS.REINFORCEMENT_ARRIVAL_DURATION,
-    );
-    const t = catapult.arrivalProgress;
-    const eased = t * t * (3 - 2 * t);
-    catapult.position.lerpVectors(catapult.arrivalStart, catapult.anchor, eased);
-    catapult.intact.position.copy(catapult.position);
-    catapult.destroyed.position.copy(catapult.position);
-    if (t < 1) return;
-    catapult.state = "idle";
-    this.onReinforced(catapult.id, catapult.generation, catapult.anchor.clone());
-  }
-
   update(dt) {
     for (const catapult of this.catapults) {
       if (catapult.destroyedState) {
+        catapult.smokeRemaining = Math.max(0, catapult.smokeRemaining - dt);
         catapult.smokeTimer -= dt;
-        if (catapult.smokeTimer <= 0) {
+        if (catapult.smokeRemaining > 0 && catapult.smokeTimer <= 0) {
           catapult.smokeTimer = .16;
           this.effects.smoke(catapult.position.clone().add(new THREE.Vector3(0, 1.2, 0)), 7);
         }
-        if (this.active) {
-          catapult.respawnTimer -= dt;
-          if (catapult.respawnTimer <= 0) this.startReinforcement(catapult);
-        }
         continue;
       }
-      if (catapult.state === "reinforcing") {
-        this.updateReinforcement(catapult, dt);
-        continue;
-      }
-      if (!this.active) continue;
+      if (!this.active || catapult.matchIndex !== this.activeMatch || catapult.state === "waiting") continue;
       this.updatePatrol(catapult, dt);
       catapult.timer -= dt;
       if (catapult.state === "idle" && catapult.timer <= .85) catapult.state = "prepare";
@@ -348,11 +313,21 @@ export class CatapultSystem {
 
   hit(index) {
     const catapult = this.catapults[index];
-    if (!catapult || catapult.destroyedState) return false;
+    if (!this.isTargetable(catapult)) return false;
     catapult.health -= 1;
     this.effects.catapultImpact(catapult.position.clone().add(new THREE.Vector3(0, .75, 0)));
     if (catapult.health <= 0) this.destroy(catapult);
     return true;
+  }
+
+  noteDropPosition(catapult) {
+    const inward = catapult.position.clone().setY(0);
+    if (inward.lengthSq() > 0) inward.normalize().multiplyScalar(-1);
+    else inward.copy(catapult.travelDirection);
+    const distance = CONFIG.CATAPULTS.COLLISION_RADIUS
+      + CONFIG.PLAYER.RADIUS
+      + CONFIG.CATAPULTS.NOTE_DROP_CLEARANCE;
+    return this.groundPosition(catapult.position.clone().addScaledVector(inward, distance));
   }
 
   destroy(catapult) {
@@ -361,15 +336,16 @@ export class CatapultSystem {
     catapult.intact.visible = false;
     catapult.destroyed.visible = true;
     catapult.smokeTimer = 0;
-    catapult.respawnTimer = CONFIG.CATAPULTS.REINFORCEMENT_DELAY
-      + catapult.id * CONFIG.CATAPULTS.REINFORCEMENT_STAGGER;
+    catapult.smokeRemaining = 4;
     this.effects.constructionBurst(catapult.position.clone(), 30);
     const notesDropped = Math.min(CONFIG.CATAPULTS.NOTES_PER_DESTRUCTION, this.notesRemainingToDrop);
+    let noteTarget = null;
     if (notesDropped > 0) {
-      this.notes.drop(catapult.position, notesDropped);
+      const dropped = this.notes.drop(this.noteDropPosition(catapult), notesDropped);
+      noteTarget = dropped[0]?.object?.position?.clone?.() || null;
       this.notesRemainingToDrop -= notesDropped;
     }
-    this.onDestroyed(catapult.id, notesDropped, catapult.respawnTimer);
+    this.onDestroyed(catapult.slot, notesDropped, noteTarget, catapult.matchIndex);
     return true;
   }
 

@@ -303,8 +303,7 @@ export class LearningSystem {
     const modeButtons = [...document.querySelectorAll("[data-quiz-mode]")];
     const storyButtons = [...document.querySelectorAll("[data-story-index]")];
     STORY_TREASURE_RUNS.forEach((run, index) => {
-      const title = document.querySelector(`[data-story-title="${index}"]`);
-      if (title) title.textContent = run.title;
+      document.querySelectorAll(`[data-story-title="${index}"]`).forEach((title) => { title.textContent = run.title; });
     });
     const render = () => {
       modeButtons.forEach((button) => button.classList.toggle("selected", button.dataset.quizMode === this.mode));
@@ -315,12 +314,24 @@ export class LearningSystem {
       safeStorageSet(MODE_KEY, this.mode);
       render();
     }));
-    storyButtons.forEach((button) => button.addEventListener("click", () => {
-      this.storyIndex = Math.max(0, Math.min(2, Number(button.dataset.storyIndex) || 0));
-      safeStorageSet(STORY_KEY, this.storyIndex);
-      render();
-    }));
+    storyButtons.forEach((button) => button.addEventListener("click", () => this.selectStory(button.dataset.storyIndex)));
+    this.renderMenu = render;
     render();
+  }
+
+  selectStory(index) {
+    this.storyIndex = Math.max(0, Math.min(STORY_TREASURE_RUNS.length - 1, Number(index) || 0));
+    safeStorageSet(STORY_KEY, this.storyIndex);
+    this.story?.setRunContext({
+      runIndex: this.storyIndex,
+      level: window.getSeaQuizSettings?.().level || "A2",
+    });
+    this.renderMenu?.();
+    return this.storyIndex;
+  }
+
+  selectNextStory() {
+    return this.selectStory((this.storyIndex + 1) % STORY_TREASURE_RUNS.length);
   }
 
   setupStory() {
@@ -328,7 +339,7 @@ export class LearningSystem {
     story = new WaldStoryMode({
       onMessage: (message) => this.toast(message, 4200),
       enterCursorMode: () => document.exitPointerLock?.(),
-      onRevealIsland: () => queueMicrotask(() => story.handleIslandEntry({ onSolved: (run) => this.onStorySolved(run) })),
+      onRevealIsland: () => queueMicrotask(() => this.onStorySolved(story.run)),
       onSolved: (run) => this.onStorySolved(run),
     });
     this.story = story;

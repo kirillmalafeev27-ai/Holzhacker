@@ -16,6 +16,7 @@ export class InputController {
     this.pointerLocked = false;
     this.lookDelta = new THREE.Vector2();
     this.onLockChange = () => {};
+    this.onEscape = () => {};
     this.bind();
   }
 
@@ -24,6 +25,11 @@ export class InputController {
       // Quiz text fields must receive every letter, including W/A/S/D. These
       // keys are movement controls only while focus is outside an editor.
       if (isEditableTarget(event.target)) return;
+      if (event.code === "Escape") {
+        event.preventDefault();
+        if (!event.repeat) this.onEscape(this.pointerLocked);
+        return;
+      }
       if (["KeyW", "KeyA", "KeyS", "KeyD", "ShiftLeft", "ShiftRight", "Space"].includes(event.code)) event.preventDefault();
       if (!event.repeat) this.pressed.add(event.code);
       this.keys.add(event.code);

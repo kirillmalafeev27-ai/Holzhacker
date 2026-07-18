@@ -13,6 +13,7 @@ import { GoblinSystem, CatapultSystem } from "./enemies.js";
 import { TowerSystem } from "./tower.js";
 import { UIManager } from "./ui.js";
 import { LearningSystem } from "./learning-system.js";
+import { GuidanceSystem } from "./guidance.js";
 import { applyDevPreset, DevDemoDirector } from "./dev-presets.js";
 import { adjustedCatapultPosition, blocksTowerShot, catapultArrivalEndpoints, catapultPositionPool, distanceToSegment2D, relocateOffTowerShots } from "./world-layout.js";
 import { PerformanceDetector, shouldKeepDecoration } from "./performance.js";
@@ -29,6 +30,13 @@ class WaldwachtGame {
     this.elapsed = 0;
     this.realElapsed = 0;
     this.logsDelivered = 0;
+    this.storedLogs = 0;
+    this.stockpileModels = [];
+    this.currentMatch = 0;
+    this.matchesWon = 0;
+    this.cursorMode = false;
+    this.guidanceKey = "";
+    this.preferredGuidanceNote = null;
     this.attackActive = false;
     this.warning30 = false;
     this.warning10 = false;
@@ -189,12 +197,13 @@ class WaldwachtGame {
     this.goblins = new GoblinSystem(this.scene, this.assets, this.navigation, this.fort, this.effects, this.audio);
     this.catapults = new CatapultSystem(this.scene, this.assets, this.projectiles, this.fort, this.player, this.notes, this.effects, this.audio);
     colliders.push(...this.catapults.collisionData());
+    this.guidance = new GuidanceSystem(this.scene, this.player, this.ui);
     this.navigation.setObstacleDebug(colliders);
     this.learning = new LearningSystem({
       input: this.input,
       toast: (message, duration) => this.ui.toast(message, duration),
       onStorySolved: () => {
-        if (this.player.health > 0 && this.fort.health > 0) this.endGame("victory");
+        if (this.matchesWon >= CONFIG.NOTES.MATCHES && this.player.health > 0 && this.fort.health > 0) this.endGame("victory");
       },
     });
     this.tower = new TowerSystem(this.player, this.input, this.ui, this.fort, this.catapults, this.projectiles, this.effects, this.audio, this.learning);
@@ -277,6 +286,7 @@ class WaldwachtGame {
       this.audio.play("build");
       this.ui.toast(stage === 3 ? "Крепость готова — башня и ворота активны" : `Строительство крепости: ${stage} / 3`);
       this.goblins.repathAll();
+      this.syncGuidance({ focus: true });
     };
     this.fort.onHealthChanged = (health, delta) => {
       if (delta < 0 && Math.random() < .32) this.ui.toast("Частокол получает повреждения");
@@ -290,13 +300,30 @@ class WaldwachtGame {
     this.notes.onCollected = (count) => {
       this.player.rig.pickupReaction();
       this.ui.toast(`Записка найдена: ${count} / ${CONFIG.NOTES.TOTAL}`);
+      if (this.preferredGuidanceNote?.collected) this.preferredGuidanceNote = null;
+      const completedMatches = Math.floor(count / CONFIG.NOTES.PER_MATCH);
+      if (completedMatches > this.matchesWon) {
+        this.matchesWon = completedMatches;
+        if (this.matchesWon < CONFIG.NOTES.MATCHES) {
+          this.currentMatch = this.matchesWon;
+          this.catapults.activateMatch(this.currentMatch);
+          this.ui.warning(`МАТЧ ${this.matchesWon} ВЫИГРАН · НАЧИНАЕТСЯ МАТЧ ${this.currentMatch + 1}`, 5200);
+          this.ui.toast("Появились три новые катапульты. Уничтожьте их и соберите ещё три записки.", 5200);
+        } else {
+          this.ui.warning("ВТОРОЙ МАТЧ ВЫИГРАН · ИСТОРИЯ СОБРАНА", 5200);
+        }
+      }
+      this.syncGuidance({ focus: true });
       this.learning.collectStoryFragment();
     };
-    this.catapults.onDestroyed = (index, notesDropped, delay) => {
+    this.catapults.onDestroyed = (index, notesDropped, noteTarget) => {
       const noteText = notesDropped > 0 ? "выпала 1 записка" : "записок больше нет";
-      this.ui.toast(`Катапульта ${index + 1} разрушена — ${noteText} · подкрепление через ${Math.ceil(delay)} с`);
+      this.ui.toast(`Катапульта ${index + 1} разрушена навсегда — ${noteText}`);
+      if (noteTarget) {
+        this.preferredGuidanceNote = this.notes.notes.find((note) => !note.collected && note.object.position.distanceTo(noteTarget) < .1) || null;
+        this.syncGuidance({ focus: true });
+      }
     };
-    this.catapults.onReinforced = (index) => this.ui.toast(`Новая катапульта ${index + 1} заняла другую огневую позицию`);
     this.goblins.onBaseAttack = () => { if (Math.random() < .24) this.ui.toast("Гоблины рубят частокол"); };
   }
 
@@ -321,16 +348,29 @@ class WaldwachtGame {
           this.ui.toast(`Генерация ИИ не удалась: ${error.message}`, 8000);
         });
       if (!this.runtime.dev) this.input.requestLock();
+      this.syncGuidance({ focus: true });
     };
     this.ui.elements.startButton.addEventListener("click", () => startGame(true));
     this.ui.elements.pause.addEventListener("click", () => this.input.requestLock());
     this.ui.elements.restart.addEventListener("click", () => location.reload());
     this.ui.elements.leaveTower.addEventListener("click", () => this.tower.leave());
+    this.ui.elements.repairButton.addEventListener("click", () => this.repairFort());
+    this.input.onEscape = (locked) => {
+      if (this.runtime.dev || !this.gameStarted || this.gameOver || this.learning?.active) return;
+      if (locked) {
+        this.cursorMode = true;
+        document.exitPointerLock?.();
+      } else {
+        this.cursorMode = false;
+        this.input.requestLock();
+      }
+    };
     this.input.onLockChange = (locked) => {
       if (this.runtime.dev) return;
       if (!this.gameStarted || this.gameOver || this.learning?.active) return;
-      this.paused = !locked;
-      this.ui.setPaused(this.paused);
+      this.cursorMode = !locked;
+      this.ui.setCursorMode(this.cursorMode);
+      this.ui.setPaused(false);
     };
     if (this.runtime.dev) queueMicrotask(() => {
       startGame(false);
@@ -353,7 +393,8 @@ class WaldwachtGame {
     }
     const modalPaused = Boolean(this.learning?.active);
     const paused = this.paused || modalPaused;
-    this.player.update(realDt, paused);
+    const playerPaused = paused || (!this.runtime.dev && !this.input.pointerLocked);
+    this.player.update(realDt, playerPaused);
     this.demoDirector?.update(realDt);
     if (!paused) {
       const simulationDt = realDt * this.runtime.timeScale;
@@ -367,6 +408,8 @@ class WaldwachtGame {
       this.projectiles.update(realDt);
       this.notes.update(realDt, this.player.position);
       this.tower.update(realDt);
+      this.syncGuidance();
+      this.guidance.update(realDt);
       this.findInteraction();
       this.animateEnvironment(realDt);
       this.effects.update(realDt);
@@ -455,8 +498,8 @@ class WaldwachtGame {
       this.currentInteraction = { label: "Поднять бревно", action: () => this.pickupLog(chopInteraction.log) };
     } else if (this.player.carrying && this.fort.stage < 3 && Math.hypot(this.player.position.x, this.player.position.z) < CONFIG.BUILD.RADIUS) {
       this.currentInteraction = { label: "Передать бревно строителям", action: () => this.deliverLog() };
-    } else if (this.player.carrying && this.fort.nearRepair(this.player.position)) {
-      this.currentInteraction = { label: "Использовать бревно для ремонта", action: () => this.repairFort() };
+    } else if (this.player.carrying && this.fort.stage === 3 && Math.hypot(this.player.position.x, this.player.position.z) < CONFIG.BUILD.RADIUS) {
+      this.currentInteraction = { label: "Оставить бревно в запасе базы", action: () => this.storeLog() };
     } else if (this.fort.nearGate(this.player.position) && this.fort.stage === 3) {
       this.currentInteraction = { label: this.fort.gateOpen ? "Закрыть ворота" : "Открыть ворота", action: () => this.fort.toggleGate() };
     } else if (this.fort.nearTower(this.player.position)) {
@@ -490,6 +533,7 @@ class WaldwachtGame {
     if (!this.chopping.pickup(log)) return;
     this.ui.setCarrying(true);
     this.ui.toast("Бревно поднято — скорость снижена");
+    this.syncGuidance({ focus: true });
   }
 
   deliverLog() {
@@ -497,19 +541,150 @@ class WaldwachtGame {
     this.logsDelivered += 1;
     this.ui.setCarrying(false);
     this.fort.buildNext();
+    this.syncGuidance({ focus: true });
+  }
+
+  storeLog() {
+    if (!this.chopping.consumeCarriedLog()) return false;
+    this.storedLogs += 1;
+    this.addStockpileVisual();
+    this.ui.setCarrying(false);
+    this.audio.play("pickup");
+    this.ui.toast(`Бревно оставлено в запасе · доступно: ${this.storedLogs}`);
+    this.syncGuidance({ focus: true });
+    return true;
   }
 
   repairFort() {
     if (this.fort.health >= this.fort.maxHealth) {
       this.ui.toast("Крепость не нуждается в ремонте");
-      return;
+      return false;
+    }
+    if (this.storedLogs <= 0) {
+      this.ui.toast("В запасе нет брёвен. Принесите бревно в центр базы.");
+      return false;
     }
     const amount = this.fort.repair();
-    if (!amount) return;
-    this.chopping.consumeCarriedLog();
-    this.ui.setCarrying(false);
+    if (!amount) return false;
+    this.storedLogs -= 1;
+    const usedLog = this.stockpileModels.pop();
+    if (usedLog) this.scene.remove(usedLog);
     this.audio.play("repair");
-    this.ui.toast(`Ремонт +${amount}`);
+    this.ui.toast(`Ремонт +${amount} · брёвен в запасе: ${this.storedLogs}`);
+    return true;
+  }
+
+  addStockpileVisual() {
+    const index = this.stockpileModels.length;
+    const row = Math.floor(index / 4);
+    const column = index % 4;
+    const object = this.assets.clone("log");
+    object.name = `StoredRepairLog_${index + 1}`;
+    object.position.set(-3.45 + column * .82, .26 + row * .43, 4.85);
+    object.rotation.y = row % 2 ? Math.PI / 2 : 0;
+    object.scale.set(2.55, .78, .78);
+    object.traverse((mesh) => {
+      if (!mesh.isMesh) return;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+    });
+    this.scene.add(object);
+    this.stockpileModels.push(object);
+  }
+
+  guidanceCandidate() {
+    if (this.gameOver || this.matchesWon >= CONFIG.NOTES.MATCHES) return null;
+    if (this.player.carrying) {
+      return {
+        key: "base-stockpile",
+        target: () => new THREE.Vector3(0, 0, 0),
+        text: this.fort.stage < 3
+          ? "Отнесите бревно в центр базы и передайте его строителям."
+          : "Отнесите бревно в центр базы и оставьте его в запасе.",
+        aimHeight: .8,
+      };
+    }
+
+    const availableNotes = this.notes.notes.filter((note) => !note.collected);
+    const preferred = this.preferredGuidanceNote && !this.preferredGuidanceNote.collected
+      ? this.preferredGuidanceNote
+      : null;
+    const note = preferred || availableNotes.sort((left, right) => (
+      left.object.position.distanceToSquared(this.player.position)
+      - right.object.position.distanceToSquared(this.player.position)
+    ))[0];
+    if (note) {
+      return {
+        key: `note-${note.object.uuid}`,
+        target: () => note.collected ? null : note.object.position,
+        text: "Катапульта уничтожена. Подойдите к отмеченной записке и заберите её.",
+        aimHeight: .35,
+      };
+    }
+
+    if (this.attackActive) {
+      const liveCatapult = this.catapults.catapults.find((catapult) => this.catapults.isTargetable(catapult));
+      if (this.tower.atTower && liveCatapult) {
+        return {
+          key: `catapult-${liveCatapult.id}`,
+          target: () => this.catapults.isTargetable(liveCatapult) ? liveCatapult.position : null,
+          text: "Решите задание, возьмите камень и уничтожьте отмеченную катапульту.",
+          aimHeight: 1.3,
+        };
+      }
+      if (liveCatapult) {
+        return {
+          key: "watchtower",
+          target: () => new THREE.Vector3(4.7, 0, -3.9),
+          text: "Поднимитесь на башню, чтобы получить камень и атаковать катапульты.",
+          aimHeight: 2.4,
+        };
+      }
+    }
+
+    const availableLogs = this.chopping.logs.filter((candidate) => !candidate.collected);
+    const currentLog = availableLogs.find((candidate) => candidate.id === this.guidanceKey);
+    const log = currentLog || availableLogs
+      .sort((left, right) => (
+        left.object.position.distanceToSquared(this.player.position)
+        - right.object.position.distanceToSquared(this.player.position)
+      ))[0];
+    if (log) {
+      return {
+        key: log.id,
+        target: () => log.collected ? null : log.object.position,
+        text: "Подойдите к готовому бревну и нажмите E, чтобы поднять его.",
+        aimHeight: .35,
+      };
+    }
+
+    const availableTrees = this.chopping.trees.filter((candidate) => candidate.state === "standing");
+    const currentTree = availableTrees.find((candidate) => `tree-${candidate.id}` === this.guidanceKey);
+    const tree = currentTree || availableTrees
+      .sort((left, right) => (
+        left.root.position.distanceToSquared(this.player.position)
+        - right.root.position.distanceToSquared(this.player.position)
+      ))[0];
+    if (!tree) return null;
+    return {
+      key: `tree-${tree.id}`,
+      target: () => tree.state === "standing" ? tree.root.position : null,
+      text: "Подойдите к отмеченному дереву, нажмите E и решите задание для рубки.",
+      aimHeight: 2.2,
+    };
+  }
+
+  syncGuidance({ focus = false } = {}) {
+    const candidate = this.guidanceCandidate();
+    if (!candidate) {
+      if (this.guidanceKey) this.guidance.clear();
+      this.guidanceKey = "";
+      return;
+    }
+    const changed = candidate.key !== this.guidanceKey;
+    if (!focus && !changed) return;
+    this.guidanceKey = candidate.key;
+    this.guidance.pointTo(candidate.target, candidate.text, { focus: focus || changed, aimHeight: candidate.aimHeight });
   }
 
   animateEnvironment(dt) {
@@ -535,8 +710,11 @@ class WaldwachtGame {
 
   objective() {
     if (this.fort.stage < 3) return { title: "Постройте крепость", text: "Первый верный ответ открывает два удара. Второй — все оставшиеся удары до падения дерева." };
-    if (!this.attackActive) return { title: "Подготовьтесь к нападению", text: "Проверьте ворота, башню и заготовьте древесину для ремонта." };
-    if (this.notes.collected < CONFIG.NOTES.TOTAL) return { title: "Защитите Waldwacht", text: "Решайте задания на башне, уничтожайте катапульты и собирайте записки." };
+    if (!this.attackActive) return { title: "Подготовьтесь к нападению", text: `Заготавливайте брёвна впрок. Сейчас на складе: ${this.storedLogs}. Ремонт выполняется кнопкой в интерфейсе.` };
+    if (this.notes.collected < CONFIG.NOTES.TOTAL) return {
+      title: `Матч ${this.currentMatch + 1} из ${CONFIG.NOTES.MATCHES}`,
+      text: `Уничтожьте три катапульты и соберите ${CONFIG.NOTES.PER_MATCH} записки. Разрушенные катапульты не восстанавливаются.`,
+    };
     return { title: "Крепость спасена", text: "Все записки найдены." };
   }
 
@@ -555,8 +733,11 @@ class WaldwachtGame {
       elapsed: this.elapsed,
       attackActive: this.attackActive,
       logs: this.logsDelivered,
+      storedLogs: this.storedLogs,
       stage: this.fort.stage,
       notes: this.notes.collected,
+      match: this.currentMatch + 1,
+      matchNotes: Math.min(CONFIG.NOTES.PER_MATCH, Math.max(0, this.notes.collected - this.currentMatch * CONFIG.NOTES.PER_MATCH)),
       objective: this.objective(),
       debug: {
         fps: this.fps,
@@ -575,8 +756,11 @@ class WaldwachtGame {
     this.state = reason === "victory" ? "victory" : reason === "player" ? "playerDefeated" : "baseDestroyed";
     this.goblins.stop();
     this.catapults.stop();
+    this.guidance.clear();
     this.projectiles.clear();
+    if (reason === "victory") this.learning.selectNextStory();
     document.exitPointerLock?.();
+    this.ui.setCursorMode(false);
     this.ui.end(reason, { notes: this.notes.collected, baseHealth: this.fort.health });
   }
 
@@ -592,8 +776,8 @@ class WaldwachtGame {
       game: this,
       snapshot: () => ({
         state: this.state, elapsed: this.elapsed, player: { health: this.player.health, position: this.player.position.toArray() },
-        base: { stage: this.fort.stage, health: this.fort.health, gate: this.fort.gateState },
-        notes: this.notes.collected, attack: this.attackActive, learning: this.learning.snapshot(),
+        base: { stage: this.fort.stage, health: this.fort.health, gate: this.fort.gateState, storedLogs: this.storedLogs },
+        notes: this.notes.collected, match: this.currentMatch + 1, matchesWon: this.matchesWon, attack: this.attackActive, learning: this.learning.snapshot(),
         render: {
           performanceProfile: this.performance.profile.id,
           performanceReason: this.performance.reason,
@@ -610,7 +794,7 @@ class WaldwachtGame {
         catapults: this.catapults.catapults.map((catapult) => ({
           health: catapult.health,
           destroyed: catapult.destroyedState,
-          generation: catapult.generation,
+          match: catapult.matchIndex + 1,
           state: catapult.state,
           position: catapult.position.toArray(),
         })),
@@ -621,7 +805,8 @@ class WaldwachtGame {
         startAttack: () => this.activateAttack(),
         toggleNavmesh: () => { const visible = this.navigation.toggleDebug(); this.ui.setDebug(visible); },
         damageBase: (amount=350) => this.fort.damage(amount),
-        repairBase: () => { this.player.setCarrying(true); this.fort.repair(); },
+        storeLog: () => { this.player.setCarrying(true); this.storeLog(); },
+        repairBase: () => { this.storedLogs += 1; this.repairFort(); },
         enterTower: () => { while (this.fort.stage < 3) this.fort.buildNext(); this.tower.enter(); },
         destroyCatapult: (index=0) => { const target = this.catapults.catapults[index]; if (target) { target.health = 1; this.catapults.hit(index); } },
         placeNotesAtPlayer: () => { for (const note of this.notes.notes) { note.object.position.copy(this.player.position).add(new THREE.Vector3(0, -1.4, 0)); note.baseY = note.object.position.y; } },
