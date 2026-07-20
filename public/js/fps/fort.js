@@ -44,6 +44,7 @@ export class FortSystem {
       const clean = object.name.replace(/\.\d+$/, "");
       if (clean === "GateLeftPivot") this.gateLeft = object;
       if (clean === "GateRightPivot") this.gateRight = object;
+      if (clean === "RepairBench" || /^RepairLog_/.test(clean)) object.visible = false;
       if (/PalisadePost|GateReinforcedPost/.test(clean) && object.isMesh) this.damageMeshes.push(object);
       if (/^TowerRailPost_/.test(clean)) {
         // Keep every post planted in the platform and shorten only its
@@ -135,7 +136,7 @@ export class FortSystem {
 
     group.traverse((object) => {
       const name = object.name.replace(/\.\d+$/, "");
-      if (/^(TowerBrace_|WorkshopBench$|WorkshopCrate$|StorehouseBody$|StorehouseCrate$|RepairBench$|Stage3End_Scaffold(?:Platform|Brace))/.test(name)) {
+      if (/^(TowerBrace_|WorkshopBench$|WorkshopCrate$|StorehouseBody$|StorehouseCrate$|Stage3End_Scaffold(?:Platform|Brace))/.test(name)) {
         addBox(object, /StorehouseBody/.test(name) ? -.04 : -.02);
       } else if (/^TowerLeg_/.test(name)) addCircle(object, .34);
       else if (/^TowerLadder(?:Left|Right)$/.test(name)) addCircle(object, .15);

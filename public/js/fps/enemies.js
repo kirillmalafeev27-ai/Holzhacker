@@ -13,6 +13,7 @@ export class GoblinSystem {
     this.audio = audio;
     this.agents = [];
     this.active = false;
+    this.canDamageBase = () => true;
     this.onBaseAttack = () => {};
   }
 
@@ -129,6 +130,7 @@ export class GoblinSystem {
     agent.attackTimer -= dt;
     if (agent.attackTimer > 0) return;
     agent.attackTimer = CONFIG.GOBLINS.ATTACK_INTERVAL * (.86 + Math.random() * .3);
+    if (!this.canDamageBase()) return;
     this.fort.damage(CONFIG.GOBLINS.ATTACK_DAMAGE);
     this.effects.woodBurst(agent.targetPoint.position.clone().add(new THREE.Vector3(0, 1.2, 0)));
     this.onBaseAttack(agent);
@@ -230,12 +232,19 @@ export class CatapultSystem {
 
   isTargetable(catapult) {
     return Boolean(
-      this.active
-      && catapult
+      catapult
       && catapult.matchIndex === this.activeMatch
       && catapult.state !== "waiting"
       && !catapult.destroyedState
     );
+  }
+
+  hasLiveCatapults(matchIndex = this.activeMatch) {
+    return this.catapults.some((catapult) => (
+      catapult.matchIndex === matchIndex
+      && catapult.state !== "waiting"
+      && !catapult.destroyedState
+    ));
   }
 
   collisionData() {
@@ -305,7 +314,7 @@ export class CatapultSystem {
         if (kind === "enemy-player") {
           if (this.player.position.distanceTo(position.clone().add(new THREE.Vector3(0, CONFIG.PLAYER.EYE_HEIGHT, 0))) < 1.8) this.player.damage(1);
         } else {
-          this.fort.damage(CONFIG.CATAPULTS.BASE_DAMAGE);
+          if (this.hasLiveCatapults()) this.fort.damage(CONFIG.CATAPULTS.BASE_DAMAGE);
         }
       },
     });

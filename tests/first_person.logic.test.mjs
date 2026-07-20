@@ -10,11 +10,11 @@ import { NavigationSystem } from "../public/js/fps/navigation.js";
 import { ProjectileSystem } from "../public/js/fps/projectiles.js";
 import { FirstPersonRig, sweepAabb, sweepCircle } from "../public/js/fps/player.js";
 import { isEditableTarget } from "../public/js/fps/input.js";
-import { CatapultSystem } from "../public/js/fps/enemies.js";
+import { CatapultSystem, GoblinSystem } from "../public/js/fps/enemies.js";
 import { AssetStore } from "../public/js/fps/assets.js";
 import { adjustedCatapultPosition, blocksTowerShot, catapultPatrolEndpoints, catapultPositionPool, relocateOffTowerShots } from "../public/js/fps/world-layout.js";
 import { PerformanceDetector, detectHardwareProfile, shouldKeepDecoration } from "../public/js/fps/performance.js";
-import { GUIDANCE_FOCUS_SECONDS, GuidanceSystem, lookAnglesToTarget } from "../public/js/fps/guidance.js";
+import { GuidanceSystem } from "../public/js/fps/guidance.js";
 
 const require = createRequire(import.meta.url);
 const { localEvaluation } = require("../recall-evaluation.cjs");
@@ -40,27 +40,20 @@ assert.equal(runtime.timeScale, 1);
 pass("A runtime modes");
 
 
-// A2 — the 3D objective arrow tracks its target and forces the camera for five seconds.
-const forwardLook = lookAnglesToTarget(new THREE.Vector3(), new THREE.Vector3(0, 0, -10));
-assert.ok(Math.abs(forwardLook.yaw) < 1e-9);
-assert.ok(Math.abs(forwardLook.pitch) < 1e-9);
+// A2 — the 3D objective arrow tracks its target without changing the camera.
 const guidanceScene = new THREE.Group();
-let forcedLooks = 0;
 let guidanceLabel = "";
 const guidance = new GuidanceSystem(
   guidanceScene,
-  { forceLookAt() { forcedLooks += 1; } },
   { setGuidance(text) { guidanceLabel = text; } },
 );
 const guidanceTarget = new THREE.Vector3(8, 0, -4);
-guidance.pointTo(() => guidanceTarget, "Идите к дереву", { focus: true });
+guidance.pointTo(() => guidanceTarget, "Идите к дереву");
 guidance.update(.1);
 assert.equal(guidance.arrow.visible, true);
 assert.equal(guidanceLabel, "Идите к дереву");
-assert.equal(forcedLooks, 1);
-assert.ok(guidance.focusRemaining > GUIDANCE_FOCUS_SECONDS - .11);
 assert.ok(Math.abs(guidance.arrow.position.x - guidanceTarget.x) < 1e-9);
-pass("A2 dynamic guidance");
+pass("A2 marker-only guidance");
 
 
 // B — the first correct learning answer grants exactly two manual axe hits;
@@ -170,7 +163,11 @@ function fortAsset(key) {
     const workshopRight = workshopLeft.clone(); workshopRight.name = "WorkshopRoofRight"; workshopRight.position.x = -3.25;
     const storehouse = new THREE.Mesh(new THREE.BoxGeometry(3.3, 2.4, 2.9), new THREE.MeshStandardMaterial({ color: 0xa26f42 }));
     storehouse.name = "StorehouseBody"; storehouse.position.set(3.8, 1.2, 2);
-    group.add(left, right, wall, railPost, rail, roof, workshopLeft, workshopRight, storehouse);
+    const repairBench = new THREE.Mesh(new THREE.BoxGeometry(2.8, .24, 1.04), new THREE.MeshBasicMaterial());
+    repairBench.name = "RepairBench"; repairBench.position.set(0, .72, 7.3);
+    const repairLog = new THREE.Mesh(new THREE.CylinderGeometry(.13, .13, 2.2), new THREE.MeshBasicMaterial());
+    repairLog.name = "RepairLog_0"; repairLog.position.set(-1.1, .32, 6.7);
+    group.add(left, right, wall, railPost, rail, roof, workshopLeft, workshopRight, storehouse, repairBench, repairLog);
   }
   return group;
 }
@@ -193,6 +190,9 @@ const workshopRoof = fort.groups[3].getObjectByName("WorkshopRoofLeft");
 assert.equal(workshopRoof.scale.z, CONFIG.FORT_BUILDINGS.ROOF_SCALE_Z);
 assert.equal(workshopRoof.material.color.getHex(), CONFIG.FORT_BUILDINGS.ROOF_COLOR);
 assert.ok(fort.groups[3].getObjectByName("WorkshopRoofRidge"));
+assert.equal(fort.groups[3].getObjectByName("RepairBench").visible, false);
+assert.equal(fort.groups[3].getObjectByName("RepairLog_0").visible, false);
+assert.equal(fort.interiorColliders.some((collider) => collider.name === "RepairBench"), false);
 for (let stage = 1; stage <= 3; stage += 1) {
   assert.equal(fort.buildNext(), true);
   fort.update(2);
@@ -282,6 +282,17 @@ for (let step = 0; step < 100; step += 1) {
 assert.ok(peak > 2);
 assert.equal(impacts, 1);
 assert.equal(projectiles.active.length, 0);
+projectiles.launch({
+  kind: "enemy-base", start: new THREE.Vector3(0, 2, 0), target: new THREE.Vector3(),
+  flightTime: 2, onImpact() { impacts += 1; },
+});
+projectiles.launch({
+  kind: "enemy-player", start: new THREE.Vector3(0, 2, 0), target: new THREE.Vector3(),
+  flightTime: 2, onImpact() { impacts += 1; },
+});
+projectiles.clearKinds("enemy-base");
+assert.deepEqual(projectiles.active.map((item) => item.kind), ["enemy-player"]);
+projectiles.clear();
 pass("F ballistic projectile");
 
 
@@ -413,6 +424,8 @@ const catapultCollider = catapultColliders[0];
 assert.equal(catapultCollider.position, movingCatapult.position);
 assert.equal(catapultCollider.radius, CONFIG.CATAPULTS.COLLISION_RADIUS);
 assert.equal(catapultColliders[CONFIG.CATAPULTS.COUNT].enabled, false);
+assert.equal(catapultSystem.active, false);
+assert.equal(catapultSystem.isTargetable(movingCatapult), true);
 catapultSystem.activate();
 catapultSystem.update(1);
 assert.ok(movingCatapult.position.distanceTo(anchor) > .2);
@@ -424,12 +437,16 @@ assert.equal(CONFIG.CATAPULTS.HITS_TO_DESTROY, 1);
 const firstMatchCatapults = catapultSystem.catapults.slice(0, CONFIG.CATAPULTS.COUNT);
 const secondMatchCatapults = catapultSystem.catapults.slice(CONFIG.CATAPULTS.COUNT);
 const destroyedPositions = firstMatchCatapults.map((catapult) => catapult.position.clone());
+catapultSystem.stop();
+assert.equal(catapultSystem.hit(movingCatapult.id), true);
 for (const catapult of firstMatchCatapults) {
+  if (catapult.destroyedState) continue;
   assert.equal(catapultSystem.hit(catapult.id), true);
   assert.equal(catapult.destroyedState, true);
 }
 for (const catapult of secondMatchCatapults) assert.equal(catapultSystem.hit(catapult.id), false);
 assert.equal(catapultNotesDropped, 3);
+assert.equal(catapultSystem.hasLiveCatapults(), false);
 const safeNoteDistance = CONFIG.CATAPULTS.COLLISION_RADIUS
   + CONFIG.PLAYER.RADIUS
   + CONFIG.CATAPULTS.NOTE_DROP_CLEARANCE;
@@ -447,6 +464,7 @@ for (let index = 0; index < firstMatchCatapults.length; index += 1) {
   assert.equal(catapultSystem.hit(catapult.id), false);
 }
 assert.equal(catapultSystem.activateMatch(1), true);
+assert.equal(catapultSystem.hasLiveCatapults(), true);
 for (let index = 0; index < secondMatchCatapults.length; index += 1) {
   const catapult = secondMatchCatapults[index];
   assert.equal(catapult.intact.visible, true);
@@ -457,8 +475,22 @@ for (let index = 0; index < secondMatchCatapults.length; index += 1) {
 assert.equal(catapultNotesDropped, CONFIG.NOTES.TOTAL);
 catapultSystem.update(60);
 for (const catapult of secondMatchCatapults) assert.equal(catapult.destroyedState, true);
+assert.equal(catapultSystem.hasLiveCatapults(), false);
 assert.equal(catapultNotesDropped, CONFIG.NOTES.TOTAL);
 pass("K two permanent catapult matches");
+
+let guardedBaseDamage = 0;
+const guardedGoblins = new GoblinSystem(
+  new THREE.Group(), {}, {}, { damage(amount) { guardedBaseDamage += amount; } }, silentEffects, silentAudio,
+);
+const wallAttacker = { attackTimer: 0, targetPoint: { position: new THREE.Vector3() } };
+guardedGoblins.canDamageBase = () => false;
+guardedGoblins.attackWall(wallAttacker, .1);
+assert.equal(guardedBaseDamage, 0);
+guardedGoblins.canDamageBase = () => true;
+wallAttacker.attackTimer = 0;
+guardedGoblins.attackWall(wallAttacker, .1);
+assert.equal(guardedBaseDamage, CONFIG.GOBLINS.ATTACK_DAMAGE);
 
 
 // L — the three authored first-person pose assets switch cleanly and the

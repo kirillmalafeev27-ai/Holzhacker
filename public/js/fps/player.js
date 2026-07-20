@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import { CONFIG } from "./config.js";
-import { lookAnglesToTarget } from "./guidance.js";
 
 
 const UP = new THREE.Vector3(0, 1, 0);
@@ -232,19 +231,6 @@ export class FirstPersonController {
 
   setStoneMode(value) {
     this.rig.setMode(value ? "stone" : "axe");
-  }
-
-  forceLookAt(target, dt) {
-    const desired = lookAnglesToTarget(this.position, target);
-    const yawDelta = Math.atan2(Math.sin(desired.yaw - this.yaw), Math.cos(desired.yaw - this.yaw));
-    const blend = 1 - Math.exp(-9 * dt);
-    this.yaw += yawDelta * blend;
-    this.pitch = THREE.MathUtils.clamp(
-      THREE.MathUtils.lerp(this.pitch, desired.pitch, blend),
-      -1.35,
-      1.35,
-    );
-    this.camera.rotation.set(this.pitch, this.yaw, 0);
   }
 
   damage(amount = 1) {

@@ -14,17 +14,20 @@ $repoPath = Join-Path $workspacePath "_github_upload2"
 $safeRepoPath = $repoPath.Replace("\", "/")
 $filesToPush = @(
   "package.json",
+  "build_first_person_gameplay_assets.py",
   "public/index.html",
   "public/styles.css",
   "public/js/config.js",
   "public/js/fps/config.js",
   "public/js/fps/enemies.js",
+  "public/js/fps/fort.js",
   "public/js/fps/guidance.js",
   "public/js/fps/input.js",
   "public/js/fps/learning-system.js",
   "public/js/fps/main.js",
   "public/js/fps/notes.js",
   "public/js/fps/player.js",
+  "public/js/fps/projectiles.js",
   "public/js/fps/tower.js",
   "public/js/fps/ui.js",
   "tests/first_person.logic.test.mjs",
@@ -72,19 +75,30 @@ if ($originUrl -ne $remoteUrl) {
 
 $dirtyFiles = @(Invoke-Git status --porcelain)
 if ($dirtyFiles.Count -gt 0) {
-  throw "The upload repository contains uncommitted changes. Commit or remove them first: $repoPath"
+  $dirtyPaths = @($dirtyFiles | ForEach-Object {
+    $path = $_.Substring(3).Trim('"')
+    if ($path -like "* -> *") { $path = ($path -split " -> ")[-1] }
+    $path.Replace("\", "/")
+  })
+  $unexpectedPaths = @($dirtyPaths | Where-Object { $filesToPush -notcontains $_ })
+  if ($unexpectedPaths.Count -gt 0) {
+    throw "The upload repository contains unrelated changes: $($unexpectedPaths -join ', ')"
+  }
+  Write-Host "Resuming the previous copy attempt..." -ForegroundColor Yellow
 }
 
-Write-Host "Updating $branch..." -ForegroundColor Cyan
-Invoke-Git fetch origin $branch
-$localBranch = @(Invoke-Git branch --list $branch)
-if ($localBranch.Count -eq 0) {
-  Invoke-Git checkout -b $branch --track "origin/$branch"
+if ($dirtyFiles.Count -eq 0) {
+  Write-Host "Updating $branch..." -ForegroundColor Cyan
+  Invoke-Git fetch origin $branch
+  $localBranch = @(Invoke-Git branch --list $branch)
+  if ($localBranch.Count -eq 0) {
+    Invoke-Git checkout -b $branch --track "origin/$branch"
+  }
+  else {
+    Invoke-Git checkout $branch
+  }
+  Invoke-Git pull --ff-only origin $branch
 }
-else {
-  Invoke-Git checkout $branch
-}
-Invoke-Git pull --ff-only origin $branch
 
 Write-Host "Copying gameplay fixes..." -ForegroundColor Cyan
 foreach ($relativePath in $filesToPush) {
@@ -101,9 +115,11 @@ foreach ($relativePath in $filesToPush) {
   Copy-Item -LiteralPath $sourcePath -Destination $targetPath -Force
 }
 
-Invoke-Git add -- $filesToPush
+$addArguments = @("add", "--") + $filesToPush
+Invoke-Git @addArguments
 Invoke-Git diff --cached --check
-$stagedFiles = @(Invoke-Git diff --cached --name-only -- $filesToPush)
+$diffArguments = @("diff", "--cached", "--name-only", "--") + $filesToPush
+$stagedFiles = @(Invoke-Git @diffArguments)
 if ($stagedFiles.Count -eq 0) {
   Write-Host "Nothing to push: the target branch already contains these changes." -ForegroundColor Yellow
   return

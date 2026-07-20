@@ -103,4 +103,16 @@ export class ProjectileSystem {
     }
     this.active.length = 0;
   }
+
+  clearKinds(...kinds) {
+    const blocked = new Set(kinds);
+    for (let index = this.active.length - 1; index >= 0; index -= 1) {
+      const projectile = this.active[index];
+      if (!blocked.has(projectile.kind)) continue;
+      projectile.object.visible = false;
+      projectile.marker.visible = false;
+      projectile.shouldImpact = null;
+      this.active.splice(index, 1);
+    }
+  }
 }

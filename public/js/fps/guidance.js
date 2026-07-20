@@ -1,18 +1,5 @@
 import * as THREE from "three";
 
-
-export const GUIDANCE_FOCUS_SECONDS = 5;
-
-export function lookAnglesToTarget(origin, target) {
-  const dx = target.x - origin.x;
-  const dy = target.y - origin.y;
-  const dz = target.z - origin.z;
-  return {
-    yaw: Math.atan2(-dx, -dz),
-    pitch: Math.atan2(dy, Math.max(1e-6, Math.hypot(dx, dz))),
-  };
-}
-
 function createArrow() {
   const group = new THREE.Group();
   group.name = "DynamicObjectiveArrow";
@@ -44,30 +31,24 @@ function createArrow() {
 }
 
 export class GuidanceSystem {
-  constructor(scene, player, ui) {
-    this.player = player;
+  constructor(scene, ui) {
     this.ui = ui;
     this.arrow = createArrow();
     this.targetProvider = null;
     this.text = "";
-    this.aimHeight = 1.15;
-    this.focusRemaining = 0;
     this.time = 0;
     this.target = new THREE.Vector3();
     scene.add(this.arrow);
   }
 
-  pointTo(targetProvider, text, { focus = false, aimHeight = 1.15 } = {}) {
+  pointTo(targetProvider, text) {
     this.targetProvider = typeof targetProvider === "function" ? targetProvider : () => targetProvider;
     this.text = text;
-    this.aimHeight = aimHeight;
-    this.focusRemaining = focus ? GUIDANCE_FOCUS_SECONDS : 0;
-    this.ui.setGuidance(text, this.focusRemaining);
+    this.ui.setGuidance(text);
   }
 
   clear() {
     this.targetProvider = null;
-    this.focusRemaining = 0;
     this.arrow.visible = false;
     this.ui.setGuidance("");
   }
@@ -87,12 +68,5 @@ export class GuidanceSystem {
     this.arrow.rotation.y = this.time * 1.45;
     const pulse = 1 + Math.sin(this.time * 5.2) * .06;
     this.arrow.scale.setScalar(pulse);
-
-    if (this.focusRemaining > 0) {
-      this.focusRemaining = Math.max(0, this.focusRemaining - dt);
-      const aimTarget = this.target.clone().add(new THREE.Vector3(0, this.aimHeight, 0));
-      this.player.forceLookAt(aimTarget, dt);
-      this.ui.setGuidance(this.text, this.focusRemaining);
-    }
   }
 }

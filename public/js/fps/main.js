@@ -196,8 +196,9 @@ class WaldwachtGame {
     this.notes = new NoteSystem(this.scene, this.assets, this.navigation, this.audio);
     this.goblins = new GoblinSystem(this.scene, this.assets, this.navigation, this.fort, this.effects, this.audio);
     this.catapults = new CatapultSystem(this.scene, this.assets, this.projectiles, this.fort, this.player, this.notes, this.effects, this.audio);
+    this.goblins.canDamageBase = () => this.catapults.hasLiveCatapults();
     colliders.push(...this.catapults.collisionData());
-    this.guidance = new GuidanceSystem(this.scene, this.player, this.ui);
+    this.guidance = new GuidanceSystem(this.scene, this.ui);
     this.navigation.setObstacleDebug(colliders);
     this.learning = new LearningSystem({
       input: this.input,
@@ -286,7 +287,7 @@ class WaldwachtGame {
       this.audio.play("build");
       this.ui.toast(stage === 3 ? "Крепость готова — башня и ворота активны" : `Строительство крепости: ${stage} / 3`);
       this.goblins.repathAll();
-      this.syncGuidance({ focus: true });
+      this.syncGuidance();
     };
     this.fort.onHealthChanged = (health, delta) => {
       if (delta < 0 && Math.random() < .32) this.ui.toast("Частокол получает повреждения");
@@ -313,7 +314,7 @@ class WaldwachtGame {
           this.ui.warning("ВТОРОЙ МАТЧ ВЫИГРАН · ИСТОРИЯ СОБРАНА", 5200);
         }
       }
-      this.syncGuidance({ focus: true });
+      this.syncGuidance();
       this.learning.collectStoryFragment();
     };
     this.catapults.onDestroyed = (index, notesDropped, noteTarget) => {
@@ -321,7 +322,11 @@ class WaldwachtGame {
       this.ui.toast(`Катапульта ${index + 1} разрушена навсегда — ${noteText}`);
       if (noteTarget) {
         this.preferredGuidanceNote = this.notes.notes.find((note) => !note.collected && note.object.position.distanceTo(noteTarget) < .1) || null;
-        this.syncGuidance({ focus: true });
+        this.syncGuidance();
+      }
+      if (!this.catapults.hasLiveCatapults()) {
+        this.projectiles.clearKinds("enemy-base");
+        this.ui.toast("Все катапульты матча уничтожены — враги больше не наносят урон базе.", 4300);
       }
     };
     this.goblins.onBaseAttack = () => { if (Math.random() < .24) this.ui.toast("Гоблины рубят частокол"); };
@@ -348,7 +353,7 @@ class WaldwachtGame {
           this.ui.toast(`Генерация ИИ не удалась: ${error.message}`, 8000);
         });
       if (!this.runtime.dev) this.input.requestLock();
-      this.syncGuidance({ focus: true });
+      this.syncGuidance();
     };
     this.ui.elements.startButton.addEventListener("click", () => startGame(true));
     this.ui.elements.pause.addEventListener("click", () => this.input.requestLock());
@@ -533,7 +538,7 @@ class WaldwachtGame {
     if (!this.chopping.pickup(log)) return;
     this.ui.setCarrying(true);
     this.ui.toast("Бревно поднято — скорость снижена");
-    this.syncGuidance({ focus: true });
+    this.syncGuidance();
   }
 
   deliverLog() {
@@ -541,7 +546,7 @@ class WaldwachtGame {
     this.logsDelivered += 1;
     this.ui.setCarrying(false);
     this.fort.buildNext();
-    this.syncGuidance({ focus: true });
+    this.syncGuidance();
   }
 
   storeLog() {
@@ -551,7 +556,7 @@ class WaldwachtGame {
     this.ui.setCarrying(false);
     this.audio.play("pickup");
     this.ui.toast(`Бревно оставлено в запасе · доступно: ${this.storedLogs}`);
-    this.syncGuidance({ focus: true });
+    this.syncGuidance();
     return true;
   }
 
@@ -601,7 +606,6 @@ class WaldwachtGame {
         text: this.fort.stage < 3
           ? "Отнесите бревно в центр базы и передайте его строителям."
           : "Отнесите бревно в центр базы и оставьте его в запасе.",
-        aimHeight: .8,
       };
     }
 
@@ -618,7 +622,6 @@ class WaldwachtGame {
         key: `note-${note.object.uuid}`,
         target: () => note.collected ? null : note.object.position,
         text: "Катапульта уничтожена. Подойдите к отмеченной записке и заберите её.",
-        aimHeight: .35,
       };
     }
 
@@ -629,7 +632,6 @@ class WaldwachtGame {
           key: `catapult-${liveCatapult.id}`,
           target: () => this.catapults.isTargetable(liveCatapult) ? liveCatapult.position : null,
           text: "Решите задание, возьмите камень и уничтожьте отмеченную катапульту.",
-          aimHeight: 1.3,
         };
       }
       if (liveCatapult) {
@@ -637,7 +639,6 @@ class WaldwachtGame {
           key: "watchtower",
           target: () => new THREE.Vector3(4.7, 0, -3.9),
           text: "Поднимитесь на башню, чтобы получить камень и атаковать катапульты.",
-          aimHeight: 2.4,
         };
       }
     }
@@ -654,7 +655,6 @@ class WaldwachtGame {
         key: log.id,
         target: () => log.collected ? null : log.object.position,
         text: "Подойдите к готовому бревну и нажмите E, чтобы поднять его.",
-        aimHeight: .35,
       };
     }
 
@@ -670,11 +670,10 @@ class WaldwachtGame {
       key: `tree-${tree.id}`,
       target: () => tree.state === "standing" ? tree.root.position : null,
       text: "Подойдите к отмеченному дереву, нажмите E и решите задание для рубки.",
-      aimHeight: 2.2,
     };
   }
 
-  syncGuidance({ focus = false } = {}) {
+  syncGuidance() {
     const candidate = this.guidanceCandidate();
     if (!candidate) {
       if (this.guidanceKey) this.guidance.clear();
@@ -682,9 +681,9 @@ class WaldwachtGame {
       return;
     }
     const changed = candidate.key !== this.guidanceKey;
-    if (!focus && !changed) return;
+    if (!changed) return;
     this.guidanceKey = candidate.key;
-    this.guidance.pointTo(candidate.target, candidate.text, { focus: focus || changed, aimHeight: candidate.aimHeight });
+    this.guidance.pointTo(candidate.target, candidate.text);
   }
 
   animateEnvironment(dt) {
